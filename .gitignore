@@ -1,1 +1,5 @@
 .env
+frames/
+.vscode/
+ai_frames/
+*.jpg
