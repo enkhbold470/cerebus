@@ -43,6 +43,7 @@ void startCameraServer();
 void setupLedFlash(int pin);
 void setupRGBLeds();
 void updateRGBState();
+void setupUltrasonicSensor();
 
 void setup() {
   Serial.begin(115200);
@@ -137,6 +138,9 @@ void setup() {
 
   // Setup RGB LEDs
   setupRGBLeds();
+  
+  // Setup Ultrasonic Sensor
+  setupUltrasonicSensor();
 
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
