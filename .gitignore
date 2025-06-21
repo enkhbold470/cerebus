@@ -2,3 +2,25 @@ frames/
 .vscode/
 ai_frames/
 *.jpg
+
+# YOLO model files
+*.pt
+
+# YOLO detection logs
+*_detections.txt
+
+# Stream capture directories
+stream_captures_*/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# macOS
+.DS_Store
+
+test_videos/
