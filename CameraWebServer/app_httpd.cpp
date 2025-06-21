@@ -43,6 +43,10 @@ bool isStreaming = false;
 #define RGB_GREEN_PIN  D1
 #define RGB_BLUE_PIN   D2
 
+// Ultrasonic Sensor Configuration
+#define TRIG_PIN D3  // GPIO5
+#define ECHO_PIN D4  // GPIO6
+
 // RGB LED Control Variables
 typedef enum {
   RGB_OFF,
@@ -135,6 +139,47 @@ void setupRGBLeds() {
   log_i("RGB LEDs initialized on pins R:%d G:%d B:%d", RGB_RED_PIN, RGB_GREEN_PIN, RGB_BLUE_PIN);
 }
 
+// Ultrasonic Sensor Functions
+void setupUltrasonicSensor() {
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  log_i("Ultrasonic sensor initialized on pins TRIG:%d ECHO:%d", TRIG_PIN, ECHO_PIN);
+}
+
+float measureDistance() {
+  // Clear the trigger pin
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  
+  // Send 10us pulse to trigger pin
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  // Read the echo pin, returns the sound wave travel time in microseconds
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000); // 30ms timeout
+  
+  // Check if we got a valid reading
+  if (duration == 0) {
+    log_e("Ultrasonic sensor: No echo received");
+    return -1.0; // Return -1 to indicate error
+  }
+  
+  // Calculate distance in centimeters
+  // Speed of sound = 343 m/s = 0.0343 cm/μs
+  // Distance = (Time × Speed) / 2 (divided by 2 because sound travels to object and back)
+  float distance_cm = (duration * 0.0343) / 2;
+  
+  // Range validation
+  if (distance_cm < 2 || distance_cm > 400) {
+    log_w("Ultrasonic sensor: Distance out of valid range: %.2f cm", distance_cm);
+  }
+  
+  return distance_cm;
+}
+
 void setRGBColor(int red, int green, int blue) {
   analogWrite(RGB_RED_PIN, red);
   analogWrite(RGB_GREEN_PIN, green);
@@ -201,6 +246,30 @@ static esp_err_t rgb_flash_handler(httpd_req_t *req) {
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
   return httpd_resp_send(req, "{\"status\":\"RGB LED FLASHING\"}", strlen("{\"status\":\"RGB LED FLASHING\"}"));
+}
+
+// Distance measurement handler
+static esp_err_t distance_handler(httpd_req_t *req) {
+  float distance = measureDistance();
+  
+  char json_response[128];
+  
+  if (distance < 0) {
+    // Error case
+    snprintf(json_response, sizeof(json_response), 
+             "{\"error\":\"No echo received\",\"cm\":-1,\"status\":\"error\"}");
+    log_e("Distance measurement failed");
+  } else {
+    // Successful measurement
+    snprintf(json_response, sizeof(json_response), 
+             "{\"cm\":%.2f,\"inches\":%.2f,\"status\":\"ok\"}", 
+             distance, distance * 0.393701);
+    log_i("Distance measured: %.2f cm", distance);
+  }
+  
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, json_response, strlen(json_response));
 }
 
 static esp_err_t bmp_handler(httpd_req_t *req) {
@@ -973,6 +1042,20 @@ void startCameraServer() {
 #endif
   };
 
+  // Distance measurement URI handler
+  httpd_uri_t distance_uri = {
+    .uri = "/distance",
+    .method = HTTP_GET,
+    .handler = distance_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
   ra_filter_init(&ra_filter, 20);
 
   log_i("Starting web server on port: '%d'", config.server_port);
@@ -994,7 +1077,11 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &rgb_off_uri);
     httpd_register_uri_handler(camera_httpd, &rgb_flash_uri);
     
+    // Register distance measurement handler
+    httpd_register_uri_handler(camera_httpd, &distance_uri);
+    
     log_i("RGB LED endpoints registered: /rgb/on, /rgb/off, /rgb/flash");
+    log_i("Distance endpoint registered: /distance");
   }
 
   // Configure stream server for multiple concurrent connections
