@@ -1,4 +1,4 @@
-// Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
+/true/ Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -231,8 +231,13 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   httpd_resp_set_hdr(req, "X-Framerate", "60");
 
 #if CONFIG_LED_ILLUMINATOR_ENABLED
-  isStreaming = true;
-  enable_led(true);
+  // Only control LED if this is the first stream connection
+  static int active_streams = 0;
+  active_streams++;
+  if (active_streams == 1) {
+    isStreaming = true;
+    enable_led(true);
+  }
 #endif
 
   while (true) {
@@ -294,8 +299,13 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   }
 
 #if CONFIG_LED_ILLUMINATOR_ENABLED
-  isStreaming = false;
-  enable_led(false);
+  // Only disable LED when all streams are closed
+  active_streams--;
+  if (active_streams <= 0) {
+    active_streams = 0;  // Prevent negative values
+    isStreaming = false;
+    enable_led(false);
+  }
 #endif
 
   return res;
@@ -673,6 +683,13 @@ static esp_err_t index_handler(httpd_req_t *req) {
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.max_uri_handlers = 16;
+  
+  // Increase connection limits for multiple clients
+  config.max_open_sockets = 7;        // Default is 4, increase to 7
+  config.task_priority = 5;           // Lower priority to be more cooperative
+  config.stack_size = 8192;           // Increase stack size for multiple connections
+  config.core_id = tskNO_AFFINITY;    // Allow task to run on any core
+  config.server_port = 80;            // Explicitly set main server port
 
   httpd_uri_t index_uri = {
     .uri = "/",
@@ -834,11 +851,19 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &win_uri);
   }
 
-  config.server_port += 1;
-  config.ctrl_port += 1;
+  // Configure stream server for multiple concurrent connections
+  config.server_port = 81;             // Explicitly set stream server port
+  config.ctrl_port = 81;               // Set control port same as server port
+  config.max_open_sockets = 5;         // Allow up to 5 concurrent stream connections
+  config.task_priority = 4;            // Higher priority for stream server
+  config.stack_size = 10240;           // Larger stack for stream processing
+  
   log_i("Starting stream server on port: '%d'", config.server_port);
   if (httpd_start(&stream_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(stream_httpd, &stream_uri);
+    log_i("Stream server started with %d max connections", config.max_open_sockets);
+  } else {
+    log_e("Failed to start stream server");
   }
 }
 
