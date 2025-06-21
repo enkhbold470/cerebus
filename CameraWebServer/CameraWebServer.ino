@@ -36,11 +36,13 @@
 // ===========================
 // Enter your WiFi credentials
 // ===========================
-const char *ssid = "NETGEAR38";
-const char *password = "mightygiant145";
+const char *ssid = "inky";
+const char *password = "asdfasdf";
 
 void startCameraServer();
 void setupLedFlash(int pin);
+void setupRGBLeds();
+void updateRGBState();
 
 void setup() {
   Serial.begin(115200);
@@ -133,6 +135,9 @@ void setup() {
   setupLedFlash(LED_GPIO_NUM);
 #endif
 
+  // Setup RGB LEDs
+  setupRGBLeds();
+
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
 
@@ -152,6 +157,9 @@ void setup() {
 }
 
 void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  delay(10000);
+  // Update RGB LED state (non-blocking)
+  updateRGBState();
+  
+  // Small delay to prevent excessive CPU usage
+  delay(10);
 }

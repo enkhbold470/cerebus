@@ -1,4 +1,4 @@
-/true/ Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
+// /true/ Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -19,7 +19,7 @@
 #include "esp32-hal-ledc.h"
 #include "sdkconfig.h"
 #include "camera_index.h"
-
+#include "Arduino.h"
 #if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
 #include "esp32-hal-log.h"
 #endif
@@ -37,6 +37,23 @@ int led_duty = 0;
 bool isStreaming = false;
 
 #endif
+
+// RGB LED Configuration
+#define RGB_RED_PIN    D0
+#define RGB_GREEN_PIN  D1
+#define RGB_BLUE_PIN   D2
+
+// RGB LED Control Variables
+typedef enum {
+  RGB_OFF,
+  RGB_ON,
+  RGB_FLASHING
+} rgb_state_t;
+
+rgb_state_t rgb_current_state = RGB_OFF;
+unsigned long rgb_last_toggle = 0;
+const unsigned long RGB_FLASH_INTERVAL = 100; // Flash every 500ms
+bool rgb_flash_state = false;
 
 typedef struct {
   httpd_req_t *req;
@@ -103,6 +120,88 @@ void enable_led(bool en) {  // Turn LED On or Off
   log_i("Set LED intensity to %d", duty);
 }
 #endif
+
+// RGB LED Control Functions
+void setupRGBLeds() {
+  pinMode(RGB_RED_PIN, OUTPUT);
+  pinMode(RGB_GREEN_PIN, OUTPUT);
+  pinMode(RGB_BLUE_PIN, OUTPUT);
+  
+  // Initialize LEDs to OFF
+  analogWrite(RGB_RED_PIN, 0);
+  analogWrite(RGB_GREEN_PIN, 0);
+  analogWrite(RGB_BLUE_PIN, 0);
+  
+  log_i("RGB LEDs initialized on pins R:%d G:%d B:%d", RGB_RED_PIN, RGB_GREEN_PIN, RGB_BLUE_PIN);
+}
+
+void setRGBColor(int red, int green, int blue) {
+  analogWrite(RGB_RED_PIN, red);
+  analogWrite(RGB_GREEN_PIN, green);
+  analogWrite(RGB_BLUE_PIN, blue);
+}
+
+void updateRGBState() {
+  unsigned long currentTime = millis();
+  
+  switch (rgb_current_state) {
+    case RGB_OFF:
+      setRGBColor(0, 0, 0);
+      break;
+      
+    case RGB_ON:
+      setRGBColor(127, 127, 127); // Medium brightness white
+      break;
+      
+    case RGB_FLASHING:
+      if (currentTime - rgb_last_toggle >= RGB_FLASH_INTERVAL) {
+        rgb_flash_state = !rgb_flash_state;
+        rgb_last_toggle = currentTime;
+        
+        if (rgb_flash_state) {
+          setRGBColor(127, 127, 127); // On - medium brightness white
+        } else {
+          setRGBColor(0, 0, 0); // Off
+        }
+      }
+      break;
+  }
+}
+
+// RGB HTTP Handlers
+static esp_err_t rgb_on_handler(httpd_req_t *req) {
+  rgb_current_state = RGB_ON;
+  setRGBColor(127, 127, 127);
+  
+  log_i("RGB LED turned ON");
+  
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "{\"status\":\"RGB LED ON\"}", strlen("{\"status\":\"RGB LED ON\"}"));
+}
+
+static esp_err_t rgb_off_handler(httpd_req_t *req) {
+  rgb_current_state = RGB_OFF;
+  setRGBColor(0, 0, 0);
+  
+  log_i("RGB LED turned OFF");
+  
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "{\"status\":\"RGB LED OFF\"}", strlen("{\"status\":\"RGB LED OFF\"}"));
+}
+
+static esp_err_t rgb_flash_handler(httpd_req_t *req) {
+  rgb_current_state = RGB_FLASHING;
+  rgb_last_toggle = millis();
+  rgb_flash_state = false;
+  
+  log_i("RGB LED set to FLASH mode");
+  
+  httpd_resp_set_type(req, "application/json");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  return httpd_resp_send(req, "{\"status\":\"RGB LED FLASHING\"}", strlen("{\"status\":\"RGB LED FLASHING\"}"));
+}
 
 static esp_err_t bmp_handler(httpd_req_t *req) {
   camera_fb_t *fb = NULL;
@@ -834,6 +933,46 @@ void startCameraServer() {
 #endif
   };
 
+  // RGB LED URI handlers
+  httpd_uri_t rgb_on_uri = {
+    .uri = "/rgb/on",
+    .method = HTTP_GET,
+    .handler = rgb_on_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t rgb_off_uri = {
+    .uri = "/rgb/off",
+    .method = HTTP_GET,
+    .handler = rgb_off_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
+  httpd_uri_t rgb_flash_uri = {
+    .uri = "/rgb/flash",
+    .method = HTTP_GET,
+    .handler = rgb_flash_handler,
+    .user_ctx = NULL
+#ifdef CONFIG_HTTPD_WS_SUPPORT
+    ,
+    .is_websocket = true,
+    .handle_ws_control_frames = false,
+    .supported_subprotocol = NULL
+#endif
+  };
+
   ra_filter_init(&ra_filter, 20);
 
   log_i("Starting web server on port: '%d'", config.server_port);
@@ -849,6 +988,13 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &greg_uri);
     httpd_register_uri_handler(camera_httpd, &pll_uri);
     httpd_register_uri_handler(camera_httpd, &win_uri);
+    
+    // Register RGB LED handlers
+    httpd_register_uri_handler(camera_httpd, &rgb_on_uri);
+    httpd_register_uri_handler(camera_httpd, &rgb_off_uri);
+    httpd_register_uri_handler(camera_httpd, &rgb_flash_uri);
+    
+    log_i("RGB LED endpoints registered: /rgb/on, /rgb/off, /rgb/flash");
   }
 
   // Configure stream server for multiple concurrent connections
