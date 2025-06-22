@@ -529,6 +529,29 @@
 	cursor: not-allowed;
 }
 
+/* Error and status messages */
+.error-message {
+	background: #5a0d0d;
+	border: 1px solid #ef4444;
+	color: #ef4444;
+	padding: 8px 12px;
+	border-radius: 4px;
+	font-size: 0.9em;
+	margin-top: 8px;
+}
+
+.connection-attempts {
+	color: #fbbf24;
+	font-size: 0.9em;
+	font-family: monospace;
+}
+
+.server-url {
+	font-family: monospace;
+	font-size: 0.9em;
+	color: #888;
+}
+
 /* Server Audio Level Display */
 .server-audio-level {
 	margin: 16px 0;

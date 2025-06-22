@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { WAKE_WORD_SERVER_URL } from '../constants';
 
 interface SSEEvent {
 	type: string;
@@ -25,7 +26,7 @@ const SSETestComponent = () => {
 	useEffect(() => {
 		// Connect to SSE endpoint
 		const eventSource = new EventSource(
-			`http://localhost:8000/sse/${clientId}`,
+			`${WAKE_WORD_SERVER_URL}/sse/${clientId}`,
 		);
 
 		eventSource.onopen = () => {

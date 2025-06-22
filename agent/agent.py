@@ -1036,19 +1036,244 @@ def start_complete_navigation_system(
         }
 
 
+# New Navigation Server Tools
+def get_current_navigation_status(session_id: str = "default") -> dict:
+    """Get current navigation status from the server for agent planning."""
+    try:
+        response = requests.get(
+            f"http://localhost:8000/navigation/current?session_id={session_id}",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if data.get("has_navigation"):
+                nav_status = data["navigation_status"]
+                location = data.get("current_location", {})
+                destination = data.get("destination", {})
+                
+                # Format response for agent
+                return {
+                    "status": "success",
+                    "has_active_navigation": True,
+                    "current_location": {
+                        "latitude": location.get("lat"),
+                        "longitude": location.get("lng"),
+                        "accuracy": location.get("accuracy"),
+                    },
+                    "destination": {
+                        "name": destination.get("name"),
+                        "latitude": destination.get("lat"),
+                        "longitude": destination.get("lng"),
+                    },
+                    "navigation_progress": {
+                        "current_step": nav_status["current_step"],
+                        "total_steps": nav_status["total_steps"],
+                        "remaining_steps": nav_status["remaining_steps"],
+                        "current_instruction": nav_status["current_instruction"],
+                        "next_instruction": nav_status["next_instruction"],
+                        "total_distance": nav_status["total_distance"],
+                        "total_duration": nav_status["total_duration"],
+                        "travel_mode": nav_status["travel_mode"],
+                    },
+                    "last_updated_seconds_ago": nav_status["time_since_update_seconds"],
+                    "report": f"Active navigation to {destination.get('name')} - Step {nav_status['current_step']} of {nav_status['total_steps']}: {nav_status['current_instruction']}"
+                }
+            else:
+                return {
+                    "status": "success",
+                    "has_active_navigation": False,
+                    "report": "No active navigation session found. User may need to start navigation first."
+                }
+        else:
+            return {
+                "status": "error",
+                "error_message": f"Server responded with status {response.status_code}",
+                "report": "Failed to get navigation status from server"
+            }
+    
+    except requests.RequestException as e:
+        return {
+            "status": "error",
+            "error_message": f"Network error: {str(e)}",
+            "report": "Could not connect to navigation server"
+        }
+    except Exception as e:
+        return {
+            "status": "error", 
+            "error_message": f"Unexpected error: {str(e)}",
+            "report": "Error retrieving navigation status"
+        }
+
+
+def get_next_navigation_instruction(session_id: str = "default") -> dict:
+    """Get the next navigation instruction and advance the step counter."""
+    try:
+        response = requests.get(
+            f"http://localhost:8000/navigation/next_step?session_id={session_id}",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if data.get("has_step"):
+                return {
+                    "status": "success",
+                    "has_instruction": True,
+                    "step_info": {
+                        "step_number": data["step_number"],
+                        "total_steps": data["total_steps"],
+                        "instruction": data["instruction"],
+                        "distance": data["distance"],
+                        "duration": data["duration"],
+                        "remaining_steps": data["remaining_steps"],
+                    },
+                    "navigation_complete": data.get("navigation_complete", False),
+                    "report": f"Step {data['step_number']}: {data['instruction']} ({data['distance']}, {data['duration']})"
+                }
+            else:
+                return {
+                    "status": "success",
+                    "has_instruction": False,
+                    "navigation_complete": True,
+                    "report": "Navigation complete - destination reached!"
+                }
+        else:
+            return {
+                "status": "error",
+                "error_message": f"Server responded with status {response.status_code}",
+                "report": "Failed to get next navigation step"
+            }
+    
+    except requests.RequestException as e:
+        return {
+            "status": "error",
+            "error_message": f"Network error: {str(e)}",
+            "report": "Could not connect to navigation server"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}",
+            "report": "Error getting next navigation instruction"
+        }
+
+
+def get_user_current_location(session_id: str = "default") -> dict:
+    """Get the user's current GPS location from the server."""
+    try:
+        response = requests.get(
+            f"http://localhost:8000/gps/location/{session_id}",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            if data["status"] == "success":
+                location = data["location"]
+                age_seconds = data.get("age_seconds", 0)
+                
+                return {
+                    "status": "success",
+                    "has_location": True,
+                    "location": {
+                        "latitude": location["lat"],
+                        "longitude": location["lng"],
+                        "accuracy": location.get("accuracy"),
+                        "speed": location.get("speed"),
+                        "heading": location.get("heading"),
+                        "timestamp": location["timestamp"]
+                    },
+                    "location_age_seconds": age_seconds,
+                    "location_fresh": age_seconds < 30,  # Consider fresh if less than 30 seconds old
+                    "report": f"Current location: {location['lat']:.6f}, {location['lng']:.6f} (±{location.get('accuracy', 'unknown')}m, {age_seconds:.1f}s ago)"
+                }
+            else:
+                return {
+                    "status": "error",
+                    "has_location": False,
+                    "error_message": data.get("message", "No location data available"),
+                    "report": "No current location available. User may need to enable GPS sharing."
+                }
+        else:
+            return {
+                "status": "error",
+                "error_message": f"Server responded with status {response.status_code}",
+                "report": "Failed to get current location from server"
+            }
+    
+    except requests.RequestException as e:
+        return {
+            "status": "error",
+            "error_message": f"Network error: {str(e)}",
+            "report": "Could not connect to GPS server"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}",
+            "report": "Error retrieving current location"
+        }
+
+
+def get_all_navigation_sessions() -> dict:
+    """Get information about all active navigation sessions."""
+    try:
+        response = requests.get(
+            "http://localhost:8000/navigation/sessions",
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            return {
+                "status": "success",
+                "active_sessions_count": data["active_sessions"],
+                "sessions": data["sessions"],
+                "report": f"Found {data['active_sessions']} active navigation sessions"
+            }
+        else:
+            return {
+                "status": "error",
+                "error_message": f"Server responded with status {response.status_code}",
+                "report": "Failed to get navigation sessions"
+            }
+    
+    except requests.RequestException as e:
+        return {
+            "status": "error",
+            "error_message": f"Network error: {str(e)}",
+            "report": "Could not connect to navigation server"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}",
+            "report": "Error retrieving navigation sessions"
+        }
+
+
 # Create the master agent
 blind_navigation_agent = Agent(
     name="blind_navigation_master",
     model="gemini-2.5-flash",
     description=(
-        "Master navigation system for blind users with GPS tracking, video obstacle detection, "
-        "voice commands, and comprehensive audio feedback."
+        "Master navigation system for blind users with real-time GPS tracking, Google Maps integration, "
+        "video obstacle detection, voice commands, and comprehensive audio feedback. Accesses live GPS data "
+        "and turn-by-turn navigation instructions from frontend web services via server API endpoints."
     ),
     instruction=(
-        "You are a comprehensive navigation assistant for visually impaired users called Cerebus. You coordinate GPS tracking, "
-        "real-time navigation updates, video-based obstacle detection with dodging instructions, "
-        "voice command processing, and multi-priority audio feedback. Your primary goal is to "
-        "provide safe, reliable navigation with clear audio instructions and immediate hazard alerts."
+        "You are Cerebus, a comprehensive navigation assistant for visually impaired users. You have access to "
+        "real-time GPS location data and Google Maps navigation information from the user's frontend interface. "
+        "Use the server-based navigation tools (get_current_navigation_status, get_next_navigation_instruction, "
+        "get_user_current_location) to access live data for planning routes and providing turn-by-turn guidance. "
+        "Coordinate GPS tracking, video-based obstacle detection with dodging instructions, voice command "
+        "processing, and multi-priority audio feedback. Your primary goal is safe, reliable navigation with "
+        "clear audio instructions and immediate hazard alerts using real location and navigation data."
     ),
     tools=[
         # GPS Tools
@@ -1072,6 +1297,11 @@ blind_navigation_agent = Agent(
         generate_prioritized_audio,
         # System Coordination
         start_complete_navigation_system,
+        # Server-based Navigation Tools (for real GPS/Maps data)
+        get_current_navigation_status,
+        get_next_navigation_instruction,
+        get_user_current_location,
+        get_all_navigation_sessions,
     ],
 )
 

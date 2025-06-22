@@ -2,6 +2,8 @@ import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import reactLogo from './assets/react.svg';
 import viteLogo from '/vite.svg';
 import { WebRTCIntegration } from './WebRTCIntegration';
+import { GPSMapsDemo } from './components/GPSMapsDemo';
+import { WAKE_WORD_SERVER_URL } from '../constants';
 
 import './App.css';
 
@@ -402,7 +404,7 @@ function App() {
 	// SSE connection setup
 	useEffect(() => {
 		const eventSource = new EventSource(
-			`http://localhost:8000/sse/${clientId}`,
+			`${WAKE_WORD_SERVER_URL}/sse/${clientId}`,
 		);
 
 		eventSource.onopen = () => {
@@ -751,6 +753,11 @@ function App() {
 						))}
 					</div>
 				)}
+
+				{/* GPS & Maps Integration Demo */}
+				<div style={{ marginTop: '40px', borderTop: '2px solid #eee', paddingTop: '20px' }}>
+					<GPSMapsDemo />
+				</div>
 			</div>
 
 			<p className="read-the-docs">
