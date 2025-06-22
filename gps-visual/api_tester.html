@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebSocket API Tester</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          Helvetica, Arial, sans-serif;
+        margin: 0;
+        padding: 2rem;
+        background-color: #f8f9fa;
+        color: #212529;
+      }
+      .container {
+        max-width: 800px;
+        margin: auto;
+        background: white;
+        padding: 2rem;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      }
+      h1,
+      h2 {
+        color: #343a40;
+        border-bottom: 2px solid #e9ecef;
+        padding-bottom: 0.5rem;
+      }
+      .feature {
+        background-color: #fdfdff;
+        border: 1px solid #dee2e6;
+        border-radius: 6px;
+        padding: 1.5rem;
+        margin-top: 1.5rem;
+      }
+      input[type="text"],
+      input[type="number"] {
+        width: 95%;
+        padding: 0.5rem;
+        margin-top: 0.5rem;
+        border: 1px solid #ced4da;
+        border-radius: 4px;
+        font-size: 1rem;
+      }
+      button {
+        background-color: #007bff;
+        color: white;
+        border: none;
+        padding: 0.75rem 1.5rem;
+        border-radius: 4px;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: background-color 0.2s;
+        margin-right: 0.5rem;
+        margin-bottom: 0.5rem;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      button:disabled {
+        background-color: #6c757d;
+        cursor: not-allowed;
+      }
+      .log-container {
+        background: #212529;
+        color: #f8f9fa;
+        padding: 1rem;
+        border-radius: 6px;
+        margin-top: 2rem;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-family: "SF Mono", "Fira Code", "Fira Mono", "Roboto Mono",
+          monospace;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+      .status {
+        padding: 1rem;
+        margin-bottom: 1rem;
+        border-radius: 4px;
+        text-align: center;
+        font-weight: bold;
+      }
+      .status.connected {
+        background-color: #d4edda;
+        color: #155724;
+      }
+      .status.disconnected {
+        background-color: #f8d7da;
+        color: #721c24;
+      }
+      .form-group {
+        margin-bottom: 1rem;
+      }
+      label {
+        font-weight: bold;
+        display: block;
+        margin-bottom: 0.25rem;
+      }
+      .vision-buttons {
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .gemini-btn {
+        background-color: #4285f4;
+      }
+      .gemini-btn:hover {
+        background-color: #3367d6;
+      }
+      .groq-btn {
+        background-color: #10b981;
+      }
+      .groq-btn:hover {
+        background-color: #059669;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>WebSocket API Tester</h1>
+      <div id="status" class="status disconnected">Disconnected</div>
+      Cannot GET /api_tester.html
+
+      <div class="form-group">
+        <label for="ws-url">WebSocket URL</label>
+        <input type="text" id="ws-url" value="ws://localhost:3000" />
+      </div>
+      <button id="connectBtn">Connect</button>
+      <button id="disconnectBtn" disabled>Disconnect</button>
+      <button id="getLocationBtn">📍 Get My Location</button>
+
+      <div id="api-features" style="display: none">
+        <!-- Feature 1: Get Route -->
+        <div class="feature">
+          <h2>Get Route</h2>
+          <form id="getRouteForm">
+            <div class="form-group">
+              <label>Origin</label>
+              <input
+                type="text"
+                id="originLat"
+                placeholder="Latitude (e.g., 37.7749)"
+                value="37.7749"
+              />
+              <input
+                type="text"
+                id="originLng"
+                placeholder="Longitude (e.g., -122.4194)"
+                value="-122.4194"
+              />
+            </div>
+            <div class="form-group">
+              <label>Destination</label>
+              <input
+                type="text"
+                id="destLat"
+                placeholder="Latitude (e.g., 37.7849)"
+                value="37.7849"
+              />
+              <input
+                type="text"
+                id="destLng"
+                placeholder="Longitude (e.g., -122.4094)"
+                value="-122.4094"
+              />
+            </div>
+            <div class="form-group">
+              <label for="destName">Destination Name (Optional)</label>
+              <input
+                type="text"
+                id="destName"
+                placeholder="e.g., Ferry Building"
+                value="Ferry Building"
+              />
+            </div>
+            <button type="submit">Send Request</button>
+          </form>
+          <div id="navigation-controls" style="display: none; margin-top: 1rem">
+            <button id="startNavBtn">▶️ Start Voice Navigation</button>
+            <button id="startTrackingBtn">🛰️ Start Live Tracking</button>
+            <div
+              id="current-instruction"
+              style="
+                margin-top: 1rem;
+                padding: 1rem;
+                background: #e9ecef;
+                border-radius: 4px;
+                font-weight: bold;
+              "
+            ></div>
+          </div>
+        </div>
+
+        <!-- Feature 2: Search Nearby -->
+        <div class="feature">
+          <h2>Search Nearby Places</h2>
+          <form id="searchNearbyForm">
+            <div class="form-group">
+              <label>Location</label>
+              <input
+                type="text"
+                id="locLat"
+                placeholder="Latitude (e.g., 37.7749)"
+                value="37.7749"
+              />
+              <input
+                type="text"
+                id="locLng"
+                placeholder="Longitude (e.g., -122.4194)"
+                value="-122.4194"
+              />
+            </div>
+            <div class="form-group">
+              <label for="query">Search Query</label>
+              <input
+                type="text"
+                id="query"
+                placeholder="e.g., chinese restaurant, cafe"
+                value="chinese restaurant"
+              />
+            </div>
+            <div class="form-group">
+              <label for="radius">Search Radius (meters)</label>
+              <input type="number" id="radius" value="5000" />
+            </div>
+            <button type="submit">Send Request</button>
+          </form>
+        </div>
+
+        <!-- Feature 3: Vision Analysis -->
+        <div class="feature">
+          <h2>Vision Analysis</h2>
+          <form id="visionForm">
+            <div class="form-group">
+              <label for="imageFile">Upload Image</label>
+              <input type="file" id="imageFile" accept="image/*" required />
+            </div>
+            <div class="vision-buttons">
+              <button type="button" id="analyzeGeminiBtn" class="gemini-btn">
+                🔍 Analyze with Gemini
+              </button>
+              <button type="button" id="analyzeGroqBtn" class="groq-btn">
+                🔍 Analyze with Groq
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div class="log-container" id="log">[Log] Waiting to connect...</div>
+    </div>
+
+    <script>
+      const statusDiv = document.getElementById("status");
+      const connectBtn = document.getElementById("connectBtn");
+      const disconnectBtn = document.getElementById("disconnectBtn");
+      const wsUrlInput = document.getElementById("ws-url");
+      const apiFeaturesDiv = document.getElementById("api-features");
+      const logDiv = document.getElementById("log");
+      const getLocationBtn = document.getElementById("getLocationBtn");
+      const navigationControlsDiv = document.getElementById(
+        "navigation-controls"
+      );
+      const startNavBtn = document.getElementById("startNavBtn");
+      const currentInstructionDiv = document.getElementById(
+        "current-instruction"
+      );
+      const startTrackingBtn = document.getElementById("startTrackingBtn");
+      const analyzeGeminiBtn = document.getElementById("analyzeGeminiBtn");
+      const analyzeGroqBtn = document.getElementById("analyzeGroqBtn");
+
+      let ws = null;
+      let currentRouteSteps = [];
+      let locationWatchId = null;
+
+      function log(message, type = "SYSTEM") {
+        const formattedMessage = `[${type}] ${new Date().toLocaleTimeString()}:\n${message}\n\n`;
+        logDiv.innerHTML += formattedMessage;
+        logDiv.scrollTop = logDiv.scrollHeight;
+      }
+
+      function getCurrentLocation() {
+        if (!navigator.geolocation) {
+          log("Geolocation is not supported by your browser.", "ERROR");
+          return;
+        }
+
+        log("Attempting to get your location...", "SYSTEM");
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const lat = position.coords.latitude;
+            const lng = position.coords.longitude;
+
+            log(`Location found: Lat: ${lat}, Lng: ${lng}`, "SYSTEM");
+
+            // Populate form fields
+            document.getElementById("originLat").value = lat;
+            document.getElementById("originLng").value = lng;
+            document.getElementById("locLat").value = lat;
+            document.getElementById("locLng").value = lng;
+          },
+          (error) => {
+            log(`Error getting location: ${error.message}`, "ERROR");
+          }
+        );
+      }
+
+      function connect() {
+        const url = wsUrlInput.value;
+        log(`Attempting to connect to ${url}...`, "SYSTEM");
+
+        ws = new WebSocket(url);
+
+        ws.onopen = () => {
+          statusDiv.textContent = "Connected";
+          statusDiv.className = "status connected";
+          connectBtn.disabled = true;
+          disconnectBtn.disabled = false;
+          apiFeaturesDiv.style.display = "block";
+          log("WebSocket connection established.", "SYSTEM");
+        };
+
+        ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          log(JSON.stringify(data, null, 2), "RECEIVED");
+
+          if (data.type === "routeResult" && data.payload.voice_instructions) {
+            currentRouteSteps = data.payload.voice_instructions;
+            navigationControlsDiv.style.display = "block";
+            currentInstructionDiv.textContent =
+              'Route received. Click "Start" to begin.';
+          } else if (data.type === "audioResponse" && data.payload.text) {
+            // Speak instructions sent from the server
+            speak(data.payload.text);
+          }
+        };
+
+        ws.onclose = () => {
+          statusDiv.textContent = "Disconnected";
+          statusDiv.className = "status disconnected";
+          connectBtn.disabled = false;
+          disconnectBtn.disabled = true;
+          apiFeaturesDiv.style.display = "none";
+          navigationControlsDiv.style.display = "none";
+          log("WebSocket connection closed.", "SYSTEM");
+          ws = null;
+          disconnect(); // Ensure tracking stops on disconnect
+        };
+
+        ws.onerror = (error) => {
+          log(
+            `WebSocket Error: ${JSON.stringify(error, [
+              "message",
+              "arguments",
+              "type",
+              "name",
+            ])}`,
+            "ERROR"
+          );
+        };
+      }
+
+      function disconnect() {
+        stopLiveTracking();
+        if (ws) {
+          ws.close();
+        }
+      }
+
+      function sendMessage(data) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const message = JSON.stringify(data);
+          ws.send(message);
+          log(JSON.stringify(data, null, 2), "SENT");
+        } else {
+          log("Cannot send message. WebSocket is not connected.", "ERROR");
+        }
+      }
+
+      function speak(text, onEndCallback) {
+        if (!("speechSynthesis" in window)) {
+          log("Sorry, your browser does not support text-to-speech.", "ERROR");
+          return;
+        }
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.onend = onEndCallback;
+        utterance.onerror = (e) => {
+          log(`An error occurred during speech synthesis: ${e.error}`, "ERROR");
+        };
+        speechSynthesis.speak(utterance);
+      }
+
+      function startNavigation() {
+        if (currentRouteSteps.length === 0) {
+          log("No route steps available to navigate.", "ERROR");
+          return;
+        }
+
+        let currentStep = 0;
+
+        function nextStep() {
+          if (currentStep < currentRouteSteps.length) {
+            const step = currentRouteSteps[currentStep];
+            const instructionText = step.instruction.replace(/<[^>]*>/g, ""); // Clean HTML tags for voice
+
+            currentInstructionDiv.textContent = instructionText;
+            log(`Speaking: ${instructionText}`, "NAVIGATION");
+
+            speak(instructionText, () => {
+              currentStep++;
+              // Wait a moment before the next instruction to simulate travel time
+              setTimeout(nextStep, 2000);
+            });
+          } else {
+            currentInstructionDiv.textContent =
+              "You have arrived at your destination.";
+            log("Navigation finished.", "SYSTEM");
+          }
+        }
+
+        log("Starting voice navigation...", "SYSTEM");
+        nextStep();
+      }
+
+      function startLiveTracking() {
+        if (!navigator.geolocation) {
+          log("Geolocation is not supported by your browser.", "ERROR");
+          return;
+        }
+
+        if (locationWatchId) {
+          log("Live tracking is already active.", "SYSTEM");
+          return;
+        }
+
+        log("Starting live location tracking...", "SYSTEM");
+
+        locationWatchId = navigator.geolocation.watchPosition(
+          (position) => {
+            const { latitude, longitude } = position.coords;
+            log(`New location: Lat: ${latitude}, Lng: ${longitude}`, "GPS");
+            sendMessage({
+              type: "updateGps",
+              payload: { lat: latitude, lng: longitude },
+            });
+          },
+          (error) => {
+            log(`Geolocation error: ${error.message}`, "ERROR");
+          },
+          { enableHighAccuracy: true, maximumAge: 0 }
+        );
+
+        startTrackingBtn.textContent = "⏹️ Stop Live Tracking";
+      }
+
+      function stopLiveTracking() {
+        if (locationWatchId) {
+          navigator.geolocation.clearWatch(locationWatchId);
+          locationWatchId = null;
+          log("Live location tracking stopped.", "SYSTEM");
+          startTrackingBtn.textContent = "🛰️ Start Live Tracking";
+        }
+      }
+
+      async function analyzeImage(apiType) {
+        const imageFile = document.getElementById("imageFile").files[0];
+        if (!imageFile) {
+          log("Please select an image file first.", "ERROR");
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append("image", imageFile);
+
+        const endpoint =
+          apiType === "gemini"
+            ? "/api/analyze-image"
+            : "/api/analyze-image-groq";
+        const apiName = apiType === "gemini" ? "Gemini" : "Groq";
+
+        log(`Uploading image for analysis with ${apiName}...`, "SYSTEM");
+
+        try {
+          const response = await fetch(endpoint, {
+            method: "POST",
+            body: formData,
+          });
+
+          const result = await response.json();
+
+          if (!response.ok) {
+            throw new Error(result.error || "Unknown error occurred");
+          }
+
+          log(
+            JSON.stringify(result, null, 2),
+            `${apiName.toUpperCase()}-ANALYSIS`
+          );
+        } catch (error) {
+          log(`${apiName} image analysis failed: ${error.message}`, "ERROR");
+        }
+      }
+
+      connectBtn.addEventListener("click", connect);
+      disconnectBtn.addEventListener("click", disconnect);
+      getLocationBtn.addEventListener("click", getCurrentLocation);
+      startNavBtn.addEventListener("click", startNavigation);
+
+      startTrackingBtn.addEventListener("click", () => {
+        if (locationWatchId) {
+          stopLiveTracking();
+        } else {
+          startLiveTracking();
+        }
+      });
+
+      analyzeGeminiBtn.addEventListener("click", () => analyzeImage("gemini"));
+      analyzeGroqBtn.addEventListener("click", () => analyzeImage("groq"));
+
+      // Form Handlers
+      document
+        .getElementById("getRouteForm")
+        .addEventListener("submit", (e) => {
+          e.preventDefault();
+          const payload = {
+            origin: {
+              lat: parseFloat(document.getElementById("originLat").value),
+              lng: parseFloat(document.getElementById("originLng").value),
+            },
+            destination: {
+              lat: parseFloat(document.getElementById("destLat").value),
+              lng: parseFloat(document.getElementById("destLng").value),
+            },
+            destinationName: document.getElementById("destName").value,
+          };
+          sendMessage({ type: "getRoute", payload });
+        });
+
+      document
+        .getElementById("searchNearbyForm")
+        .addEventListener("submit", (e) => {
+          e.preventDefault();
+          const payload = {
+            location: {
+              lat: parseFloat(document.getElementById("locLat").value),
+              lng: parseFloat(document.getElementById("locLng").value),
+            },
+            query: document.getElementById("query").value,
+            radius: parseInt(document.getElementById("radius").value, 10),
+          };
+          sendMessage({ type: "searchNearby", payload });
+        });
+    </script>
+  </body>
+</html>

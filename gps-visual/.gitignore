@@ -2,7 +2,7 @@
 .env
 
 # Node.js
-/server/node_modules
+node_modules/
 npm-debug.log
 
 # Python
