@@ -13,16 +13,30 @@
 # limitations under the License.
 
 import argparse
+import asyncio
+import json
+import logging
+import queue
 import subprocess
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Dict
 
 import numpy as np
 
 # Imports
 import pyaudio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from openwakeword.model import Model
+
+# Setup logger
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Parse input arguments
 parser = argparse.ArgumentParser()
@@ -380,81 +394,22 @@ class AudioProcessor:
         asyncio.create_task(delayed_light_off())
 
 
-# Global connection manager
-manager = ConnectionManager()
+class WakeWordProcessor:
+    def __init__(self):
+        self.is_running = False
+        self.processing_thread = None
+        self.FORMAT = pyaudio.paInt16
+        self.CHANNELS = 1
+        self.RATE = 16000
+        self.CHUNK = args.chunk_size
 
-# Resolve model path using pathlib
-script_dir = Path(__file__).parent
-if args.model_path and not Path(args.model_path).is_absolute():
-    # If it's a relative path, resolve it relative to the script directory
-    model_path = script_dir / args.model_path
-    if not model_path.exists():
-        # Also try current working directory
-        cwd_model_path = Path.cwd() / args.model_path
-        if cwd_model_path.exists():
-            model_path = cwd_model_path
-        else:
-            print(f"⚠️ Model file not found at: {model_path}")
-            print(f"⚠️ Also checked: {cwd_model_path}")
-            print(f"💡 Available files in {script_dir}:")
-            for file in script_dir.glob("*.onnx"):
-                print(f"   - {file.name}")
-    args.model_path = str(model_path)
-else:
-    model_path = Path(args.model_path) if args.model_path else None
-
-print(f"🔍 Using model path: {args.model_path}")
-
-
-# Light control functions
-def trigger_light(ip_address):
-    """Trigger the light flash"""
-    try:
-        url = f"http://{ip_address}/rgb/flash"
-        result = subprocess.run(
-            ["curl", "-s", "-m", "10", url], capture_output=True, text=True, timeout=15
-        )
-        if result.returncode == 0:
-            print(f"✓ Light triggered: {url}")
-            if result.stdout:
-                print(f"   Response: {result.stdout.strip()}")
-        else:
-            print(f"⚠️ Light trigger failed: curl returned {result.returncode}")
-            if result.stderr:
-                print(f"   Error: {result.stderr.strip()}")
-    except subprocess.TimeoutExpired:
-        print(f"✗ Light trigger timeout: {url}")
-    except Exception as e:
-        print(f"✗ Light trigger error: {e}")
-
-
-def turn_off_light(ip_address):
-    """Turn off the light"""
-    try:
-        url = f"http://{ip_address}/rgb/off"
-        result = subprocess.run(
-            ["curl", "-s", "-m", "10", url], capture_output=True, text=True, timeout=15
-        )
-        if result.returncode == 0:
-            print(f"✓ Light turned off: {url}")
-            if result.stdout:
-                print(f"   Response: {result.stdout.strip()}")
-        else:
-            print(f"⚠️ Light off failed: curl returned {result.returncode}")
-            if result.stderr:
-                print(f"   Error: {result.stderr.strip()}")
-    except subprocess.TimeoutExpired:
-        print(f"✗ Light off timeout: {url}")
-    except Exception as e:
-        print(f"✗ Light off error: {e}")
-
-
-def handle_wake_word_detection(ip_address, timeout_seconds):
-    """Handle wake word detection with light control"""
-    print(f"\n🔥 WAKE WORD DETECTED! Triggering light...")
-
-    # Trigger light immediately
-    trigger_light(ip_address)
+    def start(self):
+        """Start the wake word processor"""
+        self.is_running = True
+        self.processing_thread = threading.Thread(target=self._microphone_loop)
+        self.processing_thread.daemon = True
+        self.processing_thread.start()
+        logger.info("Wake word processor started")
 
     def stop(self):
         """Stop the wake word processor"""
@@ -548,13 +503,16 @@ def handle_wake_word_detection(ip_address, timeout_seconds):
                         )
 
                         # Schedule broadcasts
-                        loop = asyncio.get_event_loop()
-                        asyncio.run_coroutine_threadsafe(
-                            manager.broadcast_event(wake_word_event), loop
-                        )
-                        asyncio.run_coroutine_threadsafe(
-                            manager.broadcast_event(agent_start_event), loop
-                        )
+                        try:
+                            loop = asyncio.get_event_loop()
+                            asyncio.run_coroutine_threadsafe(
+                                manager.broadcast_event(wake_word_event), loop
+                            )
+                            asyncio.run_coroutine_threadsafe(
+                                manager.broadcast_event(agent_start_event), loop
+                            )
+                        except RuntimeError:
+                            logger.warning("No event loop available for broadcasting")
 
                         last_detection_time = current_time
 
@@ -576,6 +534,91 @@ def handle_wake_word_detection(ip_address, timeout_seconds):
                 mic_stream.close()
             if audio_interface:
                 audio_interface.terminate()
+
+
+# Global connection manager
+manager = ConnectionManager()
+
+# Resolve model path using pathlib
+script_dir = Path(__file__).parent
+if args.model_path and not Path(args.model_path).is_absolute():
+    # If it's a relative path, resolve it relative to the script directory
+    model_path = script_dir / args.model_path
+    if not model_path.exists():
+        # Also try current working directory
+        cwd_model_path = Path.cwd() / args.model_path
+        if cwd_model_path.exists():
+            model_path = cwd_model_path
+        else:
+            print(f"⚠️ Model file not found at: {model_path}")
+            print(f"⚠️ Also checked: {cwd_model_path}")
+            print(f"💡 Available files in {script_dir}:")
+            for file in script_dir.glob("*.onnx"):
+                print(f"   - {file.name}")
+    args.model_path = str(model_path)
+else:
+    model_path = Path(args.model_path) if args.model_path else None
+
+print(f"🔍 Using model path: {args.model_path}")
+
+
+# Light control functions
+def trigger_light(ip_address):
+    """Trigger the light flash"""
+    try:
+        url = f"http://{ip_address}/rgb/flash"
+        result = subprocess.run(
+            ["curl", "-s", "-m", "10", url], capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            print(f"✓ Light triggered: {url}")
+            if result.stdout:
+                print(f"   Response: {result.stdout.strip()}")
+        else:
+            print(f"⚠️ Light trigger failed: curl returned {result.returncode}")
+            if result.stderr:
+                print(f"   Error: {result.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        print(f"✗ Light trigger timeout: {url}")
+    except Exception as e:
+        print(f"✗ Light trigger error: {e}")
+
+
+def turn_off_light(ip_address):
+    """Turn off the light"""
+    try:
+        url = f"http://{ip_address}/rgb/off"
+        result = subprocess.run(
+            ["curl", "-s", "-m", "10", url], capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            print(f"✓ Light turned off: {url}")
+            if result.stdout:
+                print(f"   Response: {result.stdout.strip()}")
+        else:
+            print(f"⚠️ Light off failed: curl returned {result.returncode}")
+            if result.stderr:
+                print(f"   Error: {result.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        print(f"✗ Light off timeout: {url}")
+    except Exception as e:
+        print(f"✗ Light off error: {e}")
+
+
+def handle_wake_word_detection(ip_address, timeout_seconds):
+    """Handle wake word detection with light control"""
+    print(f"\n🔥 WAKE WORD DETECTED! Triggering light...")
+
+    # Trigger light immediately
+    trigger_light(ip_address)
+
+    # Run light off in separate thread to avoid blocking detection
+    def delayed_light_off():
+        time.sleep(timeout_seconds)
+        turn_off_light(ip_address)
+        print("💡 Light control sequence completed\n")
+
+    threading.Thread(target=delayed_light_off, daemon=True).start()
 
 
 # FastAPI Routes
@@ -609,33 +652,21 @@ async def websocket_audio_endpoint(websocket: WebSocket, client_id: str):
         logger.info(
             f"🔌 {client_id} disconnected. Total bytes received: {bytes_received_total}"
         )
-        time.sleep(timeout_seconds)
-        turn_off_light(ip_address)
-        print("💡 Light control sequence completed\n")
-
-    # Run light off in separate thread to avoid blocking detection
-    threading.Thread(target=delayed_light_off, daemon=True).start()
+    finally:
+        manager.disconnect_websocket(client_id)
 
 
-# Get microphone stream
+# Initialize audio variables
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
 CHUNK = args.chunk_size
-audio = pyaudio.PyAudio()
-mic_stream = audio.open(
-    format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK
-)
 
-# Load pre-trained openwakeword models
-if args.model_path != "":
-    owwModel = Model(
-        wakeword_models=[args.model_path], inference_framework=args.inference_framework
-    )
-else:
-    owwModel = Model(inference_framework=args.inference_framework)
-
-n_models = len(owwModel.models.keys())
+# Global variables - initialize later
+owwModel = None
+mic_stream = None
+audio_interface = None
+n_models = 0
 
 
 @app.get("/")
@@ -708,6 +739,74 @@ async def turn_off_light_endpoint():
     return {"message": "Light turned off", "ip": args.light_ip}
 
 
+@app.get("/sse/{client_id}")
+async def sse_endpoint(client_id: str):
+    """Server-Sent Events endpoint for real-time communication with frontend"""
+
+    async def event_generator():
+        # Connect to SSE
+        event_queue = await manager.connect_sse(client_id)
+
+        try:
+            # Send initial connection event
+            initial_event = {
+                "type": "connected",
+                "data": {
+                    "message": f"SSE connected for {client_id}",
+                    "timestamp": time.time(),
+                },
+                "timestamp": time.time(),
+                "client_id": client_id,
+            }
+
+            yield f"data: {json.dumps(initial_event)}\n\n"
+
+            # Keep connection alive and send events
+            while True:
+                try:
+                    # Wait for event with timeout for keepalive
+                    event = await asyncio.wait_for(event_queue.get(), timeout=30.0)
+
+                    # Send the event
+                    event_data = {
+                        "type": event.event_type,
+                        "data": event.data,
+                        "timestamp": event.timestamp,
+                        "client_id": event.client_id,
+                    }
+
+                    yield f"data: {json.dumps(event_data)}\n\n"
+
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    keepalive_event = {
+                        "type": "keepalive",
+                        "data": {"timestamp": time.time()},
+                        "timestamp": time.time(),
+                        "client_id": client_id,
+                    }
+                    yield f"data: {json.dumps(keepalive_event)}\n\n"
+
+        except asyncio.CancelledError:
+            logger.info(f"SSE connection cancelled for {client_id}")
+        except Exception as e:
+            logger.error(f"Error in SSE stream for {client_id}: {e}")
+        finally:
+            manager.disconnect_sse(client_id)
+            logger.info(f"SSE disconnected for {client_id}")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control",
+        },
+    )
+
+
 async def timestamp_broadcaster():
     """Background task to broadcast timestamp every second for testing"""
     while True:
@@ -737,7 +836,7 @@ async def timestamp_broadcaster():
 @app.on_event("startup")
 async def startup_event():
     """Initialize the wake word model and start microphone processing"""
-    global owwModel, wake_word_processor
+    global owwModel, wake_word_processor, n_models
 
     # Load pre-trained openwakeword models
     try:
@@ -749,6 +848,7 @@ async def startup_event():
         else:
             owwModel = Model(inference_framework=args.inference_framework)
 
+        n_models = len(owwModel.models.keys())
         logger.info(f"✓ Wake word model loaded: {args.model_path}")
         logger.info(f"✓ Available models: {list(owwModel.models.keys())}")
 
@@ -763,6 +863,7 @@ async def startup_event():
     except Exception as e:
         logger.error(f"✗ Error loading wake word model: {e}")
         owwModel = None
+        n_models = 0
 
 
 @app.on_event("shutdown")
@@ -781,60 +882,106 @@ async def shutdown_event():
 
 
 if __name__ == "__main__":
-    # Generate output string header
-    print("\n\n")
-    print("#" * 100)
-    print("Listening for wakewords...")
-    print(f"Model: {args.model_path}")
-    print(f"Framework: {args.inference_framework}")
-    print(f"Light Controller: {args.light_ip}")
-    print(f"Timeout: {args.timeout} seconds")
-    print("#" * 100)
-    print("\n" * (n_models * 3))
+    # Check if we want to run the standalone microphone detection
+    import sys
 
-    # Track wake word detection state
-    last_detection_time = 0
-    detection_cooldown = 2.0  # Prevent multiple triggers within 2 seconds
+    import uvicorn
 
-    while True:
-        # Get audio
-        audio = np.frombuffer(mic_stream.read(CHUNK), dtype=np.int16)
+    if "--standalone" in sys.argv:
+        # Initialize model and microphone for standalone mode
+        try:
+            if args.model_path != "":
+                owwModel = Model(
+                    wakeword_models=[args.model_path],
+                    inference_framework=args.inference_framework,
+                )
+            else:
+                owwModel = Model(inference_framework=args.inference_framework)
 
-        # Feed to openWakeWord model
-        prediction = owwModel.predict(audio)
+            n_models = len(owwModel.models.keys())
 
-        # Column titles
-        n_spaces = 16
-        output_string_header = """
+            # Initialize audio
+            audio = pyaudio.PyAudio()
+            mic_stream = audio.open(
+                format=FORMAT,
+                channels=CHANNELS,
+                rate=RATE,
+                input=True,
+                frames_per_buffer=CHUNK,
+            )
+
+            # Generate output string header
+            print("\n\n")
+            print("#" * 100)
+            print("Listening for wakewords...")
+            print(f"Model: {args.model_path}")
+            print(f"Framework: {args.inference_framework}")
+            print(f"Light Controller: {args.light_ip}")
+            print(f"Timeout: {args.timeout} seconds")
+            print("#" * 100)
+            print("\n" * (n_models * 3))
+
+            # Track wake word detection state
+            last_detection_time = 0
+            detection_cooldown = 2.0  # Prevent multiple triggers within 2 seconds
+
+            try:
+                while True:
+                    # Get audio
+                    audio_data = np.frombuffer(mic_stream.read(CHUNK), dtype=np.int16)
+
+                    # Feed to openWakeWord model
+                    prediction = owwModel.predict(audio_data)
+
+                    # Column titles
+                    n_spaces = 16
+                    output_string_header = """
             Model Name         | Score | Wakeword Status
             --------------------------------------
             """
 
-        wake_word_detected = False
-        for mdl in owwModel.prediction_buffer.keys():
-            # Add scores in formatted table
-            scores = list(owwModel.prediction_buffer[mdl])
-            curr_score = format(scores[-1], ".20f").replace("-", "")
+                    wake_word_detected = False
+                    for mdl in owwModel.prediction_buffer.keys():
+                        # Add scores in formatted table
+                        scores = list(owwModel.prediction_buffer[mdl])
+                        curr_score = format(scores[-1], ".20f").replace("-", "")
 
-            # Check for wake word detection
-            if scores[-1] > 0.5:
-                wake_word_detected = True
-                status_text = "Wakeword Detected!"
-            else:
-                status_text = "--" + " " * 20
+                        # Check for wake word detection
+                        if scores[-1] > 0.5:
+                            wake_word_detected = True
+                            status_text = "Wakeword Detected!"
+                        else:
+                            status_text = "--" + " " * 20
 
-            output_string_header += f"""{mdl}{" "*(n_spaces - len(mdl))}   | {curr_score[0:5]} | {status_text}
+                        output_string_header += f"""{mdl}{" "*(n_spaces - len(mdl))}   | {curr_score[0:5]} | {status_text}
             """
 
-        # Handle wake word detection with cooldown
-        current_time = time.time()
-        if (
-            wake_word_detected
-            and (current_time - last_detection_time) > detection_cooldown
-        ):
-            handle_wake_word_detection(args.light_ip, args.timeout)
-            last_detection_time = current_time
+                    # Handle wake word detection with cooldown
+                    current_time = time.time()
+                    if (
+                        wake_word_detected
+                        and (current_time - last_detection_time) > detection_cooldown
+                    ):
+                        handle_wake_word_detection(args.light_ip, args.timeout)
+                        last_detection_time = current_time
 
-        # Print results table
-        print("\033[F" * (4 * n_models + 1))
-        print(output_string_header, "                             ", end="\r")
+                    # Print results table
+                    print("\033[F" * (4 * n_models + 1))
+                    print(
+                        output_string_header, "                             ", end="\r"
+                    )
+            except KeyboardInterrupt:
+                print("\n🛑 Shutting down...")
+            finally:
+                if mic_stream:
+                    mic_stream.close()
+                if audio:
+                    audio.terminate()
+
+        except Exception as e:
+            logger.error(f"Error in standalone mode: {e}")
+            sys.exit(1)
+    else:
+        # Run FastAPI server
+        logger.info("🚀 Starting Cerebus Wake Word & WebRTC Audio Server")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
