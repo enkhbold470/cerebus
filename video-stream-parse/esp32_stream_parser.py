@@ -37,7 +37,7 @@ class ESP32StreamParser:
         save_fps_limit=1,
         flip_180=True,
         enable_yolo=True,
-        yolo_model="yolov8n.pt",
+        yolo_model="yolo11n.pt",  # Updated to YOLOv11 nano model
         yolo_confidence=0.5,
         save_annotated=True,
     ):
@@ -470,7 +470,7 @@ def main():
         save_fps_limit=0.5,         # Save 1 image every 2 seconds
         flip_180=True,              # Flip images 180 degrees
         enable_yolo=True,           # Enable YOLO detection
-        yolo_model="yolov8n.pt",    # YOLO model (nano for speed)
+        yolo_model="yolo11n.pt",    # YOLOv11 model (nano for speed)
         yolo_confidence=0.5,        # Detection confidence threshold
         save_annotated=True,        # Save images with bounding boxes
     )

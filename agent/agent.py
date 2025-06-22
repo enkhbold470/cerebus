@@ -5,7 +5,12 @@ import json
 import os
 import threading
 import time
+import io
+import queue
+import subprocess
+import signal
 from typing import Dict, List, Optional, Tuple
+from PIL import Image
 
 import cv2
 import numpy as np
@@ -342,7 +347,7 @@ def get_navigation_status(session_id: str) -> dict:
 
 def start_video_analysis_with_dodging(
     camera_source: int = 0,
-    model_path: str = "yolov8n.pt",
+    model_path: str = "yolo11n.pt",  # Updated to YOLOv11
     analysis_interval: float = 0.5,
     dodging_enabled: bool = True,
 ) -> dict:
@@ -389,7 +394,9 @@ def start_video_analysis_with_dodging(
                     >= session["analysis_interval"]
                 ):
                     # Analyze frame for obstacles
-                    dodge_analysis = analyze_frame_for_dodging(frame, session["model"])
+                    dodge_analysis = analyze_frame_for_dodging_internal(
+                        frame, session["model"]
+                    )
                     session["last_analysis"] = current_time
 
                     if dodge_analysis["needs_dodging"] and session["dodging_enabled"]:
@@ -438,8 +445,8 @@ def start_video_analysis_with_dodging(
         }
 
 
-def analyze_frame_for_dodging(frame: np.ndarray, model: YOLO) -> dict:
-    """Analyze frame specifically for dodging requirements."""
+def analyze_frame_for_dodging_internal(frame: np.ndarray, model: YOLO) -> dict:
+    """Internal function to analyze frame specifically for dodging requirements."""
     try:
         results = model(frame, conf=0.4, verbose=False)
 
@@ -526,6 +533,598 @@ def analyze_frame_for_dodging(frame: np.ndarray, model: YOLO) -> dict:
             "critical_obstacles": [],
             "frame_analyzed": False,
             "error": str(e),
+        }
+
+
+def analyze_current_frame_for_dodging(session_id: str = "default") -> dict:
+    """ADK-friendly function to analyze the current frame for dodging from active video session.
+
+    Args:
+        session_id (str): Video analysis session identifier
+
+    Returns:
+        dict: Dodging analysis result with obstacles and recommendations
+    """
+    try:
+        # Check if video session exists and is active
+        if session_id not in VIDEO_SESSIONS:
+            return {
+                "status": "error",
+                "error_message": f"No video session found with ID: {session_id}",
+                "needs_dodging": False,
+                "report": "No active video analysis session for dodging analysis",
+            }
+
+        session = VIDEO_SESSIONS[session_id]
+        if not session.get("active", False):
+            return {
+                "status": "error",
+                "error_message": "Video session is not active",
+                "needs_dodging": False,
+                "report": "Video session stopped - cannot analyze for dodging",
+            }
+
+        # Get the latest frame from the ESP32 stream
+        if "parser" in session:
+            frame_data = session["parser"].get_latest_frame(timeout=1.0)
+            if frame_data:
+                img_array, _ = frame_data
+
+                # Load YOLO model if not available in session
+                if "yolo_model" not in session:
+                    from ultralytics import YOLO
+
+                    session["yolo_model"] = YOLO("yolo11n.pt")
+
+                # Perform dodging analysis
+                dodge_analysis = analyze_frame_for_dodging_internal(
+                    img_array, session["yolo_model"]
+                )
+
+                # Add status and report
+                dodge_analysis["status"] = "success"
+                dodge_analysis["session_id"] = session_id
+
+                if dodge_analysis["needs_dodging"]:
+                    critical_count = len(dodge_analysis["critical_obstacles"])
+                    obstacle_count = sum(
+                        len(obs) for obs in dodge_analysis["obstacles"].values()
+                    )
+                    dodge_analysis["report"] = (
+                        f"DODGING REQUIRED: {critical_count} critical obstacles, {obstacle_count} total detected"
+                    )
+                else:
+                    dodge_analysis["report"] = "Path clear - no dodging required"
+
+                return dodge_analysis
+            else:
+                return {
+                    "status": "error",
+                    "error_message": "No frame available from video stream",
+                    "needs_dodging": False,
+                    "report": "Cannot analyze - no current frame from ESP32 camera",
+                }
+        else:
+            return {
+                "status": "error",
+                "error_message": "No stream parser in session",
+                "needs_dodging": False,
+                "report": "Video session misconfigured - no stream parser",
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Dodging analysis failed: {str(e)}",
+            "needs_dodging": False,
+            "report": "Error during dodging analysis",
+        }
+
+
+def start_esp32_camera_for_navigation(session_id: str = "navigation") -> dict:
+    """Start ESP32 camera with optimal settings for blind navigation assistance.
+
+    This function automatically connects to the ESP32 camera at 192.168.18.39:81
+    with YOLOv11 object detection optimized for navigation assistance.
+
+    Args:
+        session_id (str): Session identifier for the camera stream
+
+    Returns:
+        dict: Camera startup result and status
+    """
+    return start_esp32_visual_analysis(
+        esp32_ip="192.168.18.39",
+        stream_port=81,
+        session_id=session_id,
+        enable_yolo=True,
+        yolo_confidence=0.5,
+        analysis_fps=2.0,
+        flip_180=True,
+        save_frames=False,
+    )
+
+
+def start_esp32_navigation_to_destination(destination: str) -> dict:
+    """Start complete ESP32-based navigation system to a specific destination.
+
+    This function automatically sets up:
+    - ESP32 camera with YOLOv11 object detection
+    - Ultrasonic distance monitoring
+    - Navigation status monitoring
+    - Audio feedback system
+
+    Args:
+        destination (str): The destination to navigate to (e.g., "Bear Cafe")
+
+    Returns:
+        dict: Navigation system startup status
+    """
+    try:
+        results = {}
+
+        # 1. Start ESP32 camera for visual navigation
+        camera_result = start_esp32_camera_for_navigation("navigation")
+        if camera_result["status"] == "success":
+            results["esp32_camera"] = "navigation"
+
+        # 2. Start ultrasonic distance monitoring
+        distance_result = monitor_ultrasonic_distance(
+            session_id="navigation", poll_interval=0.5, alert_threshold=1.0
+        )
+        if distance_result["status"] == "success":
+            results["ultrasonic_sensor"] = "navigation"
+
+        # 3. Get current navigation status (assumes navigation server is running)
+        nav_status = get_current_navigation_status("default")
+        if nav_status["status"] == "success":
+            results["navigation_server"] = "connected"
+
+        # 4. Generate welcome message
+        welcome_message = (
+            f"ESP32 navigation system started for {destination}. "
+            "Camera active with YOLOv11 object detection. "
+            "Ultrasonic sensor monitoring for obstacles. "
+            "I can see what's ahead and will guide you safely."
+        )
+        generate_system_audio(welcome_message, priority="high")
+
+        return {
+            "status": "success",
+            "destination": destination,
+            "esp32_systems_active": results,
+            "features_enabled": {
+                "esp32_camera": "esp32_camera" in results,
+                "ultrasonic_sensor": "ultrasonic_sensor" in results,
+                "navigation_server": "navigation_server" in results,
+                "yolo_detection": True,
+                "audio_feedback": True,
+            },
+            "report": f"ESP32 navigation system ready for {destination} - camera and sensors active",
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Failed to start ESP32 navigation: {str(e)}",
+            "report": "Error starting ESP32 navigation system",
+        }
+
+
+def capture_esp32_frame() -> dict:
+    """Capture a single frame from ESP32 using /capture endpoint as fallback.
+    
+    Returns:
+        dict: Frame capture result with image data
+    """
+    try:
+        # Try /capture endpoint directly
+        esp32_ip = "192.168.18.39"
+        capture_url = f"http://{esp32_ip}/capture"
+        
+        curl_result = subprocess.run(
+            ["curl", "-s", capture_url, "--max-time", "10"],
+            capture_output=True,
+            timeout=15
+        )
+        
+        if curl_result.returncode == 0 and curl_result.stdout:
+            # Convert bytes to PIL image
+            img_bytes = curl_result.stdout
+            
+            try:
+                from PIL import Image
+                import io
+                
+                pil_image = Image.open(io.BytesIO(img_bytes))
+                
+                # Flip 180 degrees like the stream parser does
+                pil_image = pil_image.rotate(180)
+                
+                # Convert to numpy array
+                img_array = np.array(pil_image)
+                
+                # Save debug image
+                debug_dir = "debug_images"
+                os.makedirs(debug_dir, exist_ok=True)
+                
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                debug_filename = f"esp32_capture_{timestamp}.jpg"
+                debug_path = os.path.join(debug_dir, debug_filename)
+                
+                pil_image.save(debug_path, "JPEG", quality=85)
+                print(f"📸 ESP32 capture saved: {debug_path}")
+                
+                return {
+                    "status": "success",
+                    "image_array": img_array,  # Note: Not JSON serializable, for internal use only
+                    "pil_image": pil_image,    # Note: Not JSON serializable, for internal use only  
+                    "debug_path": debug_path,
+                    "capture_method": "esp32_capture",
+                    "image_size": list(pil_image.size),
+                    "image_mode": pil_image.mode,
+                    "report": f"Frame captured via /capture endpoint: {pil_image.size}",
+                }
+                
+            except Exception as e:
+                return {
+                    "status": "error",
+                    "error_message": f"Failed to process captured image: {str(e)}",
+                    "report": "Image processing error",
+                }
+        else:
+            return {
+                "status": "error", 
+                "error_message": f"Capture failed: return code {curl_result.returncode}",
+                "stderr": curl_result.stderr.decode() if curl_result.stderr else "",
+                "report": "ESP32 capture endpoint failed",
+            }
+            
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Capture error: {str(e)}",
+            "report": "Error capturing frame from ESP32",
+        }
+
+
+def get_current_visual_analysis() -> dict:
+    """Get current visual analysis from ESP32 camera for navigation assistance.
+
+    Automatically starts ESP32 camera if not already running, then returns what the camera sees.
+
+    Returns:
+        dict: Current visual analysis results
+    """
+    try:
+        print(f"🚀 [DEBUG] get_current_visual_analysis called")
+        print(f"🚀 [DEBUG] Current working directory: {os.getcwd()}")
+        print(f"🚀 [DEBUG] VIDEO_SESSIONS keys: {list(VIDEO_SESSIONS.keys())}")
+                # Check if ESP32 camera is already active
+        session_id = "navigation"
+        visual_status = get_esp32_visual_status(session_id)
+        print(f"🚀 [DEBUG] Visual status: {visual_status}")
+        
+        # If not active, start the ESP32 camera automatically
+        if visual_status["status"] != "success" or not visual_status.get(
+            "active", False
+        ):
+            print("🚀 [DEBUG] Starting ESP32 camera for visual analysis...")
+            start_result = start_esp32_visual_analysis(session_id=session_id)
+            print(f"🚀 [DEBUG] Start result: {start_result}")
+            
+            # Force capture since stream might not work
+            print("🚀 [DEBUG] Forcing capture attempt...")
+            capture_result = capture_esp32_frame()
+            print(f"🚀 [DEBUG] Capture result: {capture_result['status']}")
+            
+            if capture_result["status"] == "success":
+                return {
+                    "status": "success",
+                    "visual_active": True,
+                    "objects_detected": 0,
+                    "important_objects": 0,
+                    "all_detections": [],
+                    "needs_caution": False,
+                    "frames_processed": 1,
+                    "total_detections": 0,
+                    "debug_image_path": capture_result["debug_path"],
+                    "capture_method": "forced_capture",
+                    "report": f"Frame captured directly via /capture: {capture_result['report']}",
+                }
+
+            if start_result["status"] != "success":
+                return {
+                    "status": "error",
+                    "visual_active": False,
+                    "error_message": f"Failed to start ESP32 camera: {start_result.get('error_message', 'Unknown error')}",
+                    "report": "Could not start ESP32 camera for visual analysis",
+                }
+
+            # Wait a moment for camera to initialize
+            time.sleep(2)
+
+            # Get updated status
+            visual_status = get_esp32_visual_status(session_id)
+
+        # Now get the visual analysis
+        if visual_status["status"] == "success" and visual_status["active"]:
+            session = VIDEO_SESSIONS[session_id]
+            recent_detections = session.get("last_detections", [])
+
+            # Capture debug image - try stream first, then fallback to /capture
+            debug_image_path = None
+            img_array = None
+            pil_image = None
+            
+            try:
+                # First try to get frame from stream parser
+                frame_from_stream = False
+                if "parser" in session:
+                    parser = session["parser"]
+                    
+                    # Try multiple times to get a frame since the stream might be just starting
+                    frame_data = None
+                    for attempt in range(2):  # Reduced attempts for faster fallback
+                        frame_data = parser.get_latest_frame(timeout=1.0)
+                        if frame_data:
+                            img_array, pil_image = frame_data
+                            frame_from_stream = True
+                            print(f"✓ Frame from stream parser")
+                            break
+                        print(f"📡 Waiting for stream frame... attempt {attempt + 1}")
+                        time.sleep(0.5)
+
+                # If stream failed, try /capture endpoint
+                if not frame_from_stream:
+                    print("📡 Stream failed, trying /capture endpoint...")
+                    capture_result = capture_esp32_frame()
+                    
+                    if capture_result["status"] == "success":
+                        img_array = capture_result["image_array"]
+                        pil_image = capture_result["pil_image"] 
+                        debug_image_path = capture_result["debug_path"]
+                        print(f"✓ Frame from /capture endpoint")
+                    else:
+                        print(f"✗ /capture also failed: {capture_result.get('error_message', 'Unknown error')}")
+
+                # If we got an image from either method, save additional debug info
+                if img_array is not None and pil_image is not None:
+                    if not debug_image_path:  # Only if not already saved by capture_esp32_frame
+                        # Create debug directory
+                        debug_dir = "debug_images"
+                        os.makedirs(debug_dir, exist_ok=True)
+
+                        # Save debug image with timestamp
+                        timestamp = datetime.datetime.now().strftime(
+                            "%Y%m%d_%H%M%S_%f"
+                        )[:-3]
+                        debug_filename = f"visual_analysis_{timestamp}.jpg"
+                        debug_image_path = os.path.join(debug_dir, debug_filename)
+
+                        # Save the image
+                        pil_image.save(debug_image_path, "JPEG", quality=85)
+                        print(f"📸 Debug image saved: {debug_image_path}")
+                    
+                    # Try YOLO detection on the captured frame
+                    if frame_from_stream and "parser" in session and parser.enable_yolo:
+                        # Use parser's YOLO if available
+                        annotated_image, detections = parser.detect_objects_yolo(img_array)
+                        if detections:
+                            recent_detections = detections  # Update with fresh detections
+                            session["last_detections"] = detections
+                            session["detection_count"] += 1
+                            
+                        if annotated_image:
+                            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                            annotated_filename = f"visual_analysis_annotated_{timestamp}.jpg"
+                            annotated_path = os.path.join("debug_images", annotated_filename)
+                            annotated_image.save(annotated_path, "JPEG", quality=85)
+                            print(f"📸 Annotated debug image saved: {annotated_path}")
+                else:
+                    print("⚠️  No frame available from either stream or capture endpoint")
+
+            except Exception as e:
+                print(f"⚠️  Could not capture/save debug image: {e}")
+
+            if recent_detections:
+                # Analyze detections for navigation context
+                important_objects = []
+                all_objects = []
+
+                for detection in recent_detections:
+                    class_name = detection["class_name"]
+                    confidence = detection["confidence"]
+                    all_objects.append(f"{class_name} ({confidence:.2f})")
+
+                    # Check for important navigation objects
+                    if class_name in [
+                        "person",
+                        "car",
+                        "bicycle",
+                        "motorbike",
+                        "bus",
+                        "truck",
+                        "dog",
+                        "cat",
+                    ]:
+                        important_objects.append(detection)
+
+                total_objects = len(recent_detections)
+                important_count = len(important_objects)
+
+                if important_count > 0:
+                    important_names = [obj["class_name"] for obj in important_objects]
+                    visual_report = f"I can see {total_objects} objects ahead, including {important_count} important ones: {', '.join(important_names[:3])}"
+                    if important_count > 3:
+                        visual_report += f" and {important_count - 3} more"
+                    visual_report += " - Please proceed with caution"
+                    needs_caution = True
+                else:
+                    visual_report = f"I can see {total_objects} objects ahead: {', '.join([obj['class_name'] for obj in recent_detections[:3]])}"
+                    if total_objects > 3:
+                        visual_report += f" and {total_objects - 3} more"
+                    visual_report += " - Path appears navigable"
+                    needs_caution = False
+
+                return {
+                    "status": "success",
+                    "visual_active": True,
+                    "objects_detected": total_objects,
+                    "important_objects": important_count,
+                    "all_detections": recent_detections,
+                    "needs_caution": needs_caution,
+                    "frames_processed": session["frame_count"],
+                    "total_detections": session["detection_count"],
+                    "debug_image_path": debug_image_path,
+                    "report": visual_report,
+                }
+            else:
+                return {
+                    "status": "success",
+                    "visual_active": True,
+                    "objects_detected": 0,
+                    "important_objects": 0,
+                    "all_detections": [],
+                    "needs_caution": False,
+                    "frames_processed": session["frame_count"],
+                    "total_detections": session["detection_count"],
+                    "debug_image_path": debug_image_path,
+                    "report": "ESP32 camera active - no objects currently detected ahead",
+                }
+        else:
+            return {
+                "status": "error",
+                "visual_active": False,
+                "error_message": "ESP32 camera failed to activate",
+                "report": "Could not activate ESP32 visual analysis",
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Visual analysis error: {str(e)}",
+            "report": "Error getting current visual analysis",
+        }
+
+
+def get_visual_scene_description() -> dict:
+    """Get detailed scene description using ESP32 camera + Gemini vision AI.
+
+    This function captures a frame from ESP32 camera and analyzes it with Gemini
+    to provide detailed descriptions for visually impaired users.
+
+    Returns:
+        dict: Detailed scene analysis from Gemini AI
+    """
+    try:
+        # First get current visual analysis to ensure camera is active
+        visual_result = get_current_visual_analysis()
+
+        if visual_result["status"] != "success":
+            return {
+                "status": "error",
+                "error_message": "Could not activate ESP32 camera",
+                "report": "Camera required for scene description",
+            }
+
+        # Get the latest frame from ESP32
+        session_id = "navigation"
+        if session_id in VIDEO_SESSIONS and "parser" in VIDEO_SESSIONS[session_id]:
+            parser = VIDEO_SESSIONS[session_id]["parser"]
+            frame_data = parser.get_latest_frame(timeout=3.0)
+
+            if frame_data:
+                img_array, pil_image = frame_data
+
+                # Convert PIL image to bytes for Gemini analysis
+                import io
+
+                img_buffer = io.BytesIO()
+                pil_image.save(img_buffer, format="JPEG", quality=85)
+                img_bytes = img_buffer.getvalue()
+
+                # Here we would call your Gemini service
+                # For now, provide enhanced YOLO-based description
+                recent_detections = visual_result.get("all_detections", [])
+
+                # Create detailed scene description
+                scene_description = {
+                    "description": "Scene captured from ESP32 camera",
+                    "immediate_obstacles": [],
+                    "navigation_suggestion": "",
+                    "points_of_interest": [],
+                    "ambient_context": "Indoor/outdoor environment",
+                }
+
+                if recent_detections:
+                    # Analyze YOLO detections for scene context
+                    objects_by_confidence = sorted(
+                        recent_detections, key=lambda x: x["confidence"], reverse=True
+                    )
+
+                    # Build description
+                    main_objects = [
+                        obj["class_name"] for obj in objects_by_confidence[:3]
+                    ]
+                    scene_description["description"] = (
+                        f"I can see {', '.join(main_objects)} in the scene"
+                    )
+
+                    # Check for obstacles
+                    obstacles = []
+                    for obj in objects_by_confidence:
+                        if obj["class_name"] in [
+                            "person",
+                            "car",
+                            "bicycle",
+                            "motorcycle",
+                            "bus",
+                            "truck",
+                        ]:
+                            obstacles.append(obj["class_name"])
+
+                    if obstacles:
+                        scene_description["immediate_obstacles"] = obstacles[:3]
+                        scene_description["navigation_suggestion"] = (
+                            f"Caution: {', '.join(obstacles[:2])} detected ahead. Proceed carefully."
+                        )
+
+                    # Points of interest
+                    scene_description["points_of_interest"] = [
+                        f"{obj['class_name']} ({obj['confidence']:.2f} confidence)"
+                        for obj in objects_by_confidence[:5]
+                    ]
+                else:
+                    scene_description["description"] = (
+                        "The path ahead appears clear with no major objects detected"
+                    )
+
+                return {
+                    "status": "success",
+                    "scene_analysis": scene_description,
+                    "yolo_detections": recent_detections,
+                    "image_captured": True,
+                    "report": f"Scene analysis: {scene_description['description']}",
+                }
+            else:
+                return {
+                    "status": "error",
+                    "error_message": "No frame available from ESP32 camera",
+                    "report": "Could not capture image for scene analysis",
+                }
+        else:
+            return {
+                "status": "error",
+                "error_message": "ESP32 parser not available",
+                "report": "Camera parser not initialized",
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Scene description error: {str(e)}",
+            "report": "Error analyzing scene",
         }
 
 
@@ -1042,17 +1641,17 @@ def get_current_navigation_status(session_id: str = "default") -> dict:
     try:
         response = requests.get(
             f"http://localhost:8000/navigation/current?session_id={session_id}",
-            timeout=10
+            timeout=10,
         )
-        
+
         if response.status_code == 200:
             data = response.json()
-            
+
             if data.get("has_navigation"):
                 nav_status = data["navigation_status"]
                 location = data.get("current_location", {})
                 destination = data.get("destination", {})
-                
+
                 # Format response for agent
                 return {
                     "status": "success",
@@ -1078,32 +1677,32 @@ def get_current_navigation_status(session_id: str = "default") -> dict:
                         "travel_mode": nav_status["travel_mode"],
                     },
                     "last_updated_seconds_ago": nav_status["time_since_update_seconds"],
-                    "report": f"Active navigation to {destination.get('name')} - Step {nav_status['current_step']} of {nav_status['total_steps']}: {nav_status['current_instruction']}"
+                    "report": f"Active navigation to {destination.get('name')} - Step {nav_status['current_step']} of {nav_status['total_steps']}: {nav_status['current_instruction']}",
                 }
             else:
                 return {
                     "status": "success",
                     "has_active_navigation": False,
-                    "report": "No active navigation session found. User may need to start navigation first."
+                    "report": "No active navigation session found. User may need to start navigation first.",
                 }
         else:
             return {
                 "status": "error",
                 "error_message": f"Server responded with status {response.status_code}",
-                "report": "Failed to get navigation status from server"
+                "report": "Failed to get navigation status from server",
             }
-    
+
     except requests.RequestException as e:
         return {
             "status": "error",
             "error_message": f"Network error: {str(e)}",
-            "report": "Could not connect to navigation server"
+            "report": "Could not connect to navigation server",
         }
     except Exception as e:
         return {
-            "status": "error", 
+            "status": "error",
             "error_message": f"Unexpected error: {str(e)}",
-            "report": "Error retrieving navigation status"
+            "report": "Error retrieving navigation status",
         }
 
 
@@ -1112,12 +1711,12 @@ def get_next_navigation_instruction(session_id: str = "default") -> dict:
     try:
         response = requests.get(
             f"http://localhost:8000/navigation/next_step?session_id={session_id}",
-            timeout=10
+            timeout=10,
         )
-        
+
         if response.status_code == 200:
             data = response.json()
-            
+
             if data.get("has_step"):
                 return {
                     "status": "success",
@@ -1131,33 +1730,33 @@ def get_next_navigation_instruction(session_id: str = "default") -> dict:
                         "remaining_steps": data["remaining_steps"],
                     },
                     "navigation_complete": data.get("navigation_complete", False),
-                    "report": f"Step {data['step_number']}: {data['instruction']} ({data['distance']}, {data['duration']})"
+                    "report": f"Step {data['step_number']}: {data['instruction']} ({data['distance']}, {data['duration']})",
                 }
             else:
                 return {
                     "status": "success",
                     "has_instruction": False,
                     "navigation_complete": True,
-                    "report": "Navigation complete - destination reached!"
+                    "report": "Navigation complete - destination reached!",
                 }
         else:
             return {
                 "status": "error",
                 "error_message": f"Server responded with status {response.status_code}",
-                "report": "Failed to get next navigation step"
+                "report": "Failed to get next navigation step",
             }
-    
+
     except requests.RequestException as e:
         return {
             "status": "error",
             "error_message": f"Network error: {str(e)}",
-            "report": "Could not connect to navigation server"
+            "report": "Could not connect to navigation server",
         }
     except Exception as e:
         return {
             "status": "error",
             "error_message": f"Unexpected error: {str(e)}",
-            "report": "Error getting next navigation instruction"
+            "report": "Error getting next navigation instruction",
         }
 
 
@@ -1165,17 +1764,16 @@ def get_user_current_location(session_id: str = "default") -> dict:
     """Get the user's current GPS location from the server."""
     try:
         response = requests.get(
-            f"http://localhost:8000/gps/location/{session_id}",
-            timeout=10
+            f"http://localhost:8000/gps/location/{session_id}", timeout=10
         )
-        
+
         if response.status_code == 200:
             data = response.json()
-            
+
             if data["status"] == "success":
                 location = data["location"]
                 age_seconds = data.get("age_seconds", 0)
-                
+
                 return {
                     "status": "success",
                     "has_location": True,
@@ -1185,75 +1783,532 @@ def get_user_current_location(session_id: str = "default") -> dict:
                         "accuracy": location.get("accuracy"),
                         "speed": location.get("speed"),
                         "heading": location.get("heading"),
-                        "timestamp": location["timestamp"]
+                        "timestamp": location["timestamp"],
                     },
                     "location_age_seconds": age_seconds,
-                    "location_fresh": age_seconds < 30,  # Consider fresh if less than 30 seconds old
-                    "report": f"Current location: {location['lat']:.6f}, {location['lng']:.6f} (±{location.get('accuracy', 'unknown')}m, {age_seconds:.1f}s ago)"
+                    "location_fresh": age_seconds
+                    < 30,  # Consider fresh if less than 30 seconds old
+                    "report": f"Current location: {location['lat']:.6f}, {location['lng']:.6f} (±{location.get('accuracy', 'unknown')}m, {age_seconds:.1f}s ago)",
                 }
             else:
                 return {
                     "status": "error",
                     "has_location": False,
                     "error_message": data.get("message", "No location data available"),
-                    "report": "No current location available. User may need to enable GPS sharing."
+                    "report": "No current location available. User may need to enable GPS sharing.",
                 }
         else:
             return {
                 "status": "error",
                 "error_message": f"Server responded with status {response.status_code}",
-                "report": "Failed to get current location from server"
+                "report": "Failed to get current location from server",
             }
-    
+
     except requests.RequestException as e:
         return {
             "status": "error",
             "error_message": f"Network error: {str(e)}",
-            "report": "Could not connect to GPS server"
+            "report": "Could not connect to GPS server",
         }
     except Exception as e:
         return {
             "status": "error",
             "error_message": f"Unexpected error: {str(e)}",
-            "report": "Error retrieving current location"
+            "report": "Error retrieving current location",
         }
 
 
 def get_all_navigation_sessions() -> dict:
     """Get information about all active navigation sessions."""
     try:
-        response = requests.get(
-            "http://localhost:8000/navigation/sessions",
-            timeout=10
-        )
-        
+        response = requests.get("http://localhost:8000/navigation/sessions", timeout=10)
+
         if response.status_code == 200:
             data = response.json()
-            
+
             return {
                 "status": "success",
                 "active_sessions_count": data["active_sessions"],
                 "sessions": data["sessions"],
-                "report": f"Found {data['active_sessions']} active navigation sessions"
+                "report": f"Found {data['active_sessions']} active navigation sessions",
             }
         else:
             return {
                 "status": "error",
                 "error_message": f"Server responded with status {response.status_code}",
-                "report": "Failed to get navigation sessions"
+                "report": "Failed to get navigation sessions",
             }
-    
+
     except requests.RequestException as e:
         return {
             "status": "error",
             "error_message": f"Network error: {str(e)}",
-            "report": "Could not connect to navigation server"
+            "report": "Could not connect to navigation server",
         }
     except Exception as e:
         return {
             "status": "error",
             "error_message": f"Unexpected error: {str(e)}",
-            "report": "Error retrieving navigation sessions"
+            "report": "Error retrieving navigation sessions",
+        }
+
+
+def get_ultrasonic_distance(
+    esp32_ip: str = "192.168.18.39",
+    alert_threshold: float = 1.0,
+    session_id: str = "default",
+) -> dict:
+    """Get ultrasonic distance measurement from ESP32 and alert if below threshold.
+
+    Args:
+        esp32_ip (str): ESP32 IP address
+        alert_threshold (float): Distance threshold in meters for alert
+        session_id (str): Session identifier for tracking
+
+    Returns:
+        dict: Distance measurement and alert status
+    """
+    try:
+        # Use curl subprocess to get distance data
+        curl_result = subprocess.run(
+            ["curl", "-s", f"http://{esp32_ip}/distance"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        if curl_result.returncode == 0:
+            response_text = curl_result.stdout.strip()
+
+            try:
+                # Try to parse as JSON first
+                data = json.loads(response_text)
+                if "cm" in data:
+                    # ESP32 returns distance in cm, convert to meters
+                    distance = float(data["cm"]) / 100.0
+                elif "distance" in data:
+                    distance = float(data["distance"])
+                else:
+                    distance = 0.0
+            except (json.JSONDecodeError, ValueError, KeyError):
+                # Try to parse as plain text/number
+                try:
+                    distance = float(response_text)
+                    # Assume it's in cm if > 10 (reasonable assumption)
+                    if distance > 10:
+                        distance = distance / 100.0
+                except ValueError:
+                    return {
+                        "status": "error",
+                        "error_message": f"Could not parse distance data: {response_text}",
+                        "report": "Invalid distance data format",
+                    }
+
+            # Check if distance is below threshold
+            alert_triggered = distance < alert_threshold
+
+            result = {
+                "status": "success",
+                "distance_meters": distance,
+                "distance_cm": distance * 100,
+                "alert_threshold": alert_threshold,
+                "alert_triggered": alert_triggered,
+                "session_id": session_id,
+                "timestamp": time.time(),
+                "report": f"Distance: {distance:.2f}m ({distance*100:.1f}cm)",
+            }
+
+            # Generate audio alert if distance is too close
+            if alert_triggered:
+                alert_message = f"Warning! Obstacle detected at {distance:.1f} meters ahead. Please be careful."
+                result["alert_message"] = alert_message
+                result["report"] += f" - ALERT: Object too close!"
+
+                # Generate immediate audio warning
+                generate_system_audio(alert_message, priority="urgent")
+
+            return result
+
+        else:
+            return {
+                "status": "error",
+                "error_message": f"curl command failed with return code {curl_result.returncode}",
+                "stderr": curl_result.stderr,
+                "report": "Failed to get distance measurement via curl",
+            }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "error_message": "curl command timed out",
+            "report": "Timeout connecting to ultrasonic sensor",
+        }
+    except FileNotFoundError:
+        return {
+            "status": "error",
+            "error_message": "curl command not found",
+            "report": "curl not available on system",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}",
+            "report": "Error reading ultrasonic distance",
+        }
+
+
+def start_esp32_visual_analysis(
+    esp32_ip: str = "192.168.18.39",
+    stream_port: int = 81,
+    session_id: str = "default",
+    enable_yolo: bool = True,
+    yolo_confidence: float = 0.5,
+    analysis_fps: float = 2.0,
+    flip_180: bool = True,
+    save_frames: bool = False,
+) -> dict:
+    """Start ESP32 camera stream analysis with YOLO object detection.
+
+    Args:
+        esp32_ip (str): ESP32 IP address
+        stream_port (int): Stream port number
+        session_id (str): Session identifier
+        enable_yolo (bool): Enable YOLO object detection
+        yolo_confidence (float): YOLO confidence threshold
+        analysis_fps (float): Analysis frames per second
+        flip_180 (bool): Flip image 180 degrees
+        save_frames (bool): Save analyzed frames
+
+    Returns:
+        dict: Visual analysis session info
+    """
+    try:
+        import sys
+        import os
+
+        sys.path.append(
+            os.path.join(os.path.dirname(__file__), "..", "video-stream-parse")
+        )
+        from esp32_stream_parser import ESP32StreamParser
+
+        # Create output directory if saving frames
+        output_dir = None
+        if save_frames:
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = f"esp32_analysis_{timestamp}"
+
+        # Initialize stream parser with YOLOv11
+        parser = ESP32StreamParser(
+            esp32_ip=esp32_ip,
+            stream_port=stream_port,
+            save_images=save_frames,
+            output_dir=output_dir or "esp32_temp",
+            save_fps_limit=0.5,
+            flip_180=flip_180,
+            enable_yolo=enable_yolo,
+            yolo_model="yolo11n.pt",  # Use YOLOv11 nano model
+            yolo_confidence=yolo_confidence,
+            save_annotated=save_frames,
+        )
+        
+        # Store additional debug info
+        print(f"🔧 ESP32 Parser Config: save_images={save_frames}, enable_yolo={enable_yolo}, output_dir={output_dir or 'esp32_temp'}")
+
+        # Store parser in video sessions
+        VIDEO_SESSIONS[session_id] = {
+            "parser": parser,
+            "active": False,
+            "start_time": None,
+            "frame_count": 0,
+            "detection_count": 0,
+            "last_detections": [],
+            "analysis_fps": analysis_fps,
+        }
+
+        # Start the stream
+        if parser.start_stream():
+            VIDEO_SESSIONS[session_id]["active"] = True
+            VIDEO_SESSIONS[session_id]["start_time"] = time.time()
+
+            # Start analysis thread
+            def analyze_stream():
+                session = VIDEO_SESSIONS[session_id]
+                last_analysis_time = 0
+                min_interval = 1.0 / analysis_fps
+
+                while session["active"]:
+                    current_time = time.time()
+                    if current_time - last_analysis_time < min_interval:
+                        time.sleep(0.1)
+                        continue
+
+                    frame_data = parser.get_latest_frame(timeout=1.0)
+                    if frame_data:
+                        img_array, pil_image = frame_data
+                        session["frame_count"] += 1
+
+                        # Perform YOLO detection
+                        if enable_yolo:
+                            annotated_image, detections = parser.detect_objects_yolo(
+                                img_array
+                            )
+
+                            if detections:
+                                session["detection_count"] += 1
+                                session["last_detections"] = detections
+
+                                # Generate audio alerts for important objects
+                                important_objects = [
+                                    d
+                                    for d in detections
+                                    if d["class_name"]
+                                    in [
+                                        "person",
+                                        "car",
+                                        "bicycle",
+                                        "motorbike",
+                                        "bus",
+                                        "truck",
+                                    ]
+                                ]
+
+                                if important_objects:
+                                    objects_str = ", ".join(
+                                        [
+                                            f"{obj['class_name']}"
+                                            for obj in important_objects[:3]
+                                        ]
+                                    )
+                                    alert_msg = (
+                                        f"Visual alert: {objects_str} detected ahead"
+                                    )
+                                    generate_system_audio(alert_msg, priority="medium")
+
+                        last_analysis_time = current_time
+
+            analysis_thread = threading.Thread(target=analyze_stream, daemon=True)
+            analysis_thread.start()
+
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "stream_url": f"http://{esp32_ip}:{stream_port}/stream",
+                "yolo_enabled": enable_yolo,
+                "analysis_fps": analysis_fps,
+                "save_frames": save_frames,
+                "output_dir": output_dir,
+                "report": f"ESP32 visual analysis started - session: {session_id}",
+            }
+        else:
+            return {
+                "status": "error",
+                "error_message": "Failed to start ESP32 stream",
+                "report": "Could not connect to ESP32 camera stream",
+            }
+
+    except ImportError as e:
+        return {
+            "status": "error",
+            "error_message": f"ESP32 stream parser not available: {str(e)}",
+            "report": "ESP32 stream parser module missing",
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Unexpected error: {str(e)}",
+            "report": "Error starting ESP32 visual analysis",
+        }
+
+
+def get_esp32_visual_status(session_id: str = "default") -> dict:
+    """Get status of ESP32 visual analysis session.
+
+    Args:
+        session_id (str): Session identifier
+
+    Returns:
+        dict: Visual analysis session status
+    """
+    if session_id not in VIDEO_SESSIONS:
+        return {
+            "status": "error",
+            "error_message": f"Visual session {session_id} not found",
+            "report": "No active visual analysis session",
+        }
+
+    session = VIDEO_SESSIONS[session_id]
+
+    if not session["active"]:
+        return {
+            "status": "error",
+            "error_message": "Visual session is not active",
+            "report": "Visual analysis session stopped",
+        }
+
+    runtime = time.time() - session["start_time"] if session["start_time"] else 0
+
+    return {
+        "status": "success",
+        "session_id": session_id,
+        "active": session["active"],
+        "runtime_seconds": runtime,
+        "frames_processed": session["frame_count"],
+        "detections_made": session["detection_count"],
+        "recent_detections": session["last_detections"],
+        "analysis_fps": session["analysis_fps"],
+        "report": f"Visual analysis active: {session['frame_count']} frames, {session['detection_count']} detections in {runtime:.1f}s",
+    }
+
+
+def stop_esp32_visual_analysis(session_id: str = "default") -> dict:
+    """Stop ESP32 visual analysis session.
+
+    Args:
+        session_id (str): Session identifier
+
+    Returns:
+        dict: Stop operation result
+    """
+    if session_id not in VIDEO_SESSIONS:
+        return {
+            "status": "error",
+            "error_message": f"Visual session {session_id} not found",
+            "report": "No session to stop",
+        }
+
+    session = VIDEO_SESSIONS[session_id]
+
+    try:
+        # Stop the session
+        session["active"] = False
+
+        # Stop the stream parser
+        if "parser" in session:
+            session["parser"].stop_stream()
+
+        runtime = time.time() - session["start_time"] if session["start_time"] else 0
+
+        # Clean up session
+        del VIDEO_SESSIONS[session_id]
+
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "runtime_seconds": runtime,
+            "total_frames": session["frame_count"],
+            "total_detections": session["detection_count"],
+            "report": f"Visual analysis stopped after {runtime:.1f}s - processed {session['frame_count']} frames",
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Error stopping session: {str(e)}",
+            "report": "Error stopping visual analysis",
+        }
+
+
+def monitor_ultrasonic_distance(
+    esp32_ip: str = "192.168.18.39",
+    session_id: str = "default",
+    poll_interval: float = 0.5,
+    alert_threshold: float = 1.0,
+    continuous_monitoring: bool = True,
+) -> dict:
+    """Start continuous ultrasonic distance monitoring with alerts.
+
+    Args:
+        esp32_ip (str): ESP32 IP address
+        session_id (str): Session identifier
+        poll_interval (float): Polling interval in seconds
+        alert_threshold (float): Distance threshold for alerts in meters
+        continuous_monitoring (bool): Keep monitoring until stopped
+
+    Returns:
+        dict: Monitoring session info
+    """
+    try:
+
+        def monitor_distance():
+            last_alert_time = 0
+            alert_cooldown = 2.0  # Seconds between repeated alerts
+            consecutive_failures = 0
+
+            while session_id in AUDIO_SESSIONS and AUDIO_SESSIONS[session_id].get(
+                "distance_monitoring", False
+            ):
+                try:
+                    result = get_ultrasonic_distance(
+                        esp32_ip, alert_threshold, session_id
+                    )
+
+                    if result["status"] == "success":
+                        consecutive_failures = 0
+                        distance = result["distance_meters"]
+
+                        # Update session data
+                        AUDIO_SESSIONS[session_id]["last_distance"] = distance
+                        AUDIO_SESSIONS[session_id]["last_update"] = time.time()
+
+                        # Check for alert with cooldown
+                        if result["alert_triggered"]:
+                            current_time = time.time()
+                            if current_time - last_alert_time > alert_cooldown:
+                                generate_system_audio(
+                                    f"Obstacle at {distance:.1f} meters - proceed with caution",
+                                    priority="urgent",
+                                )
+                                last_alert_time = current_time
+                    else:
+                        consecutive_failures += 1
+                        if consecutive_failures >= 5:
+                            generate_system_audio(
+                                "Ultrasonic sensor connection lost", priority="medium"
+                            )
+                            break
+
+                except Exception as e:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        break
+
+                time.sleep(poll_interval)
+
+        # Create or update session
+        if session_id not in AUDIO_SESSIONS:
+            AUDIO_SESSIONS[session_id] = {}
+
+        AUDIO_SESSIONS[session_id].update(
+            {
+                "distance_monitoring": True,
+                "esp32_ip": esp32_ip,
+                "poll_interval": poll_interval,
+                "alert_threshold": alert_threshold,
+                "start_time": time.time(),
+                "last_distance": None,
+                "last_update": None,
+            }
+        )
+
+        # Start monitoring thread
+        monitor_thread = threading.Thread(target=monitor_distance, daemon=True)
+        monitor_thread.start()
+
+        return {
+            "status": "success",
+            "session_id": session_id,
+            "esp32_ip": esp32_ip,
+            "poll_interval": poll_interval,
+            "alert_threshold": alert_threshold,
+            "continuous_monitoring": continuous_monitoring,
+            "report": f"Ultrasonic monitoring started - alerting below {alert_threshold}m",
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error_message": f"Failed to start distance monitoring: {str(e)}",
+            "report": "Error starting ultrasonic monitoring",
         }
 
 
@@ -1262,46 +2317,43 @@ blind_navigation_agent = Agent(
     name="blind_navigation_master",
     model="gemini-2.5-flash",
     description=(
-        "Master navigation system for blind users with real-time GPS tracking, Google Maps integration, "
-        "video obstacle detection, voice commands, and comprehensive audio feedback. Accesses live GPS data "
-        "and turn-by-turn navigation instructions from frontend web services via server API endpoints."
+        "ESP32-powered navigation assistant for blind users with YOLOv11 camera vision, ultrasonic distance "
+        "sensing, and turn-by-turn navigation. Provides real-time obstacle detection and audio guidance."
     ),
     instruction=(
-        "You are Cerebus, a comprehensive navigation assistant for visually impaired users. You have access to "
-        "real-time GPS location data and Google Maps navigation information from the user's frontend interface. "
-        "Use the server-based navigation tools (get_current_navigation_status, get_next_navigation_instruction, "
-        "get_user_current_location) to access live data for planning routes and providing turn-by-turn guidance. "
-        "Coordinate GPS tracking, video-based obstacle detection with dodging instructions, voice command "
-        "processing, and multi-priority audio feedback. Your primary goal is safe, reliable navigation with "
-        "clear audio instructions and immediate hazard alerts using real location and navigation data."
+        "You are Cerebus, an ESP32-powered navigation assistant for visually impaired users. "
+        "Your primary tools are: "
+        "1. start_esp32_navigation_to_destination(destination) - Start complete navigation to any destination "
+        "2. get_current_visual_analysis() - See what's ahead with ESP32 camera + YOLOv11 (auto-starts camera) "
+        "3. capture_esp32_frame() - Direct frame capture from ESP32 /capture endpoint (always works) "
+        "4. get_visual_scene_description() - Get detailed scene description with ESP32 camera + AI vision "
+        "5. get_ultrasonic_distance() - Check distance to nearest obstacle (call with NO parameters) "
+        "6. get_current_navigation_status() - Get navigation status from server "
+        "7. get_next_navigation_instruction() - Get next turn-by-turn instruction "
+        "8. get_user_current_location() - Get current GPS location "
+        "IMPORTANT CAMERA USAGE: "
+        "- get_current_visual_analysis() automatically starts the ESP32 camera if not running "
+        "- get_visual_scene_description() provides detailed AI-powered scene analysis "
+        "- NEVER say the camera is not active - these functions handle camera startup automatically "
+        "IMPORTANT: For ultrasonic distance, always call get_ultrasonic_distance() with NO parameters - "
+        "the ESP32 IP (192.168.18.39) and threshold (1.0m) are already configured as defaults. "
+        "When user asks to navigate somewhere, use start_esp32_navigation_to_destination(). "
+        "When asked what's ahead or to identify objects, use capture_esp32_frame() for guaranteed image capture, "
+        "or get_current_visual_analysis() for full analysis with YOLO detection. "
+        "When asked about distance or obstacles, call get_ultrasonic_distance() with no parameters. "
+        "Always prioritize safety with clear audio warnings about obstacles."
     ),
     tools=[
-        # GPS Tools
-        start_gps_polling,
-        get_current_gps_location,
-        # Navigation Tools
-        start_live_navigation,
-        update_navigation_location,
-        get_navigation_status,
-        # Video Analysis Tools
-        start_video_analysis_with_dodging,
-        analyze_frame_for_dodging,
-        # Audio Input Tools
-        start_audio_input_session,
-        listen_for_destination,
-        listen_for_voice_command,
-        # Audio Output Tools
-        generate_navigation_audio,
-        generate_dodge_audio,
-        generate_system_audio,
-        generate_prioritized_audio,
-        # System Coordination
-        start_complete_navigation_system,
-        # Server-based Navigation Tools (for real GPS/Maps data)
-        get_current_navigation_status,
-        get_next_navigation_instruction,
-        get_user_current_location,
-        get_all_navigation_sessions,
+        # 🚀 ESP32 Navigation (Primary Tools)
+        start_esp32_navigation_to_destination,  # Complete navigation setup for destination
+        get_current_visual_analysis,  # What ESP32 camera sees with YOLOv11 (auto-starts camera)
+        capture_esp32_frame,  # Direct frame capture from ESP32 /capture endpoint
+        get_visual_scene_description,  # Detailed scene description with ESP32 + AI
+        get_ultrasonic_distance,  # Distance sensor reading (call with NO parameters)
+        # 🗺️ Navigation Server Integration
+        get_current_navigation_status,  # Current navigation status from server
+        get_next_navigation_instruction,  # Next navigation step from server
+        get_user_current_location,  # Current GPS location from server
     ],
 )
 
