@@ -18,21 +18,48 @@ import json
 import logging
 import queue
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+<<<<<<<< HEAD:wake-word/main_server.py
 from typing import Dict, Optional, List
+========
+from typing import Dict, Optional
+>>>>>>>> d920de2 (Refactor agent initialization and enhance wake word server functionality. Updated import structure to directly reference root_agent and added new agent logic for GPS and video processing capabilities. Introduced comprehensive audio feedback mechanisms for navigation assistance.):wake-word/server.py
 
 import numpy as np
 
 # Imports
 import pyaudio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from openwakeword.model import Model
+
+# Import ADK agent
+# Try to import ADK agent - graceful fallback if not available
+try:
+    import os
+    import sys
+
+    # Add parent directory to path to access the agent module
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    agent_path = os.path.join(parent_dir, "agent")
+    if agent_path not in sys.path:
+        sys.path.insert(0, agent_path)
+
+    from agent import root_agent
+
+    ADK_AGENT_AVAILABLE = True
+    logging.info("✅ ADK Agent imported successfully")
+except ImportError as e:
+    ADK_AGENT_AVAILABLE = False
+    logging.warning(f"⚠️ ADK Agent not available: {e}")
+    root_agent = None
 
 # Setup logger
 logging.basicConfig(level=logging.INFO)
@@ -78,8 +105,73 @@ parser.add_argument(
 
 args = parser.parse_args()
 
-# FastAPI app setup
-app = FastAPI(title="Cerebus Wake Word & WebRTC Audio Server")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan events"""
+    global owwModel, wake_word_processor, n_models
+
+    # Startup
+    try:
+        # Load pre-trained openwakeword models
+        if args.model_path != "":
+            owwModel = Model(
+                wakeword_models=[args.model_path],
+                inference_framework=args.inference_framework,
+            )
+        else:
+            owwModel = Model(inference_framework=args.inference_framework)
+
+        n_models = len(owwModel.models.keys())
+        logger.info(f"✅ Wake word model loaded: {args.model_path}")
+        logger.info(f"✅ Available models: {list(owwModel.models.keys())}")
+
+        # Start microphone-based wake word detection
+        wake_word_processor = WakeWordProcessor()
+        wake_word_processor.start()
+
+        # Start timestamp broadcaster for testing
+        asyncio.create_task(timestamp_broadcaster())
+        logger.info("✅ Timestamp broadcaster started (5-second interval)")
+
+    except Exception as e:
+        logger.error(f"❌ Error loading wake word model: {e}")
+        owwModel = None
+        n_models = 0
+
+    yield  # Application runs here
+
+    # Shutdown
+    try:
+        global mic_stream, audio_interface
+
+        if wake_word_processor:
+            wake_word_processor.stop()
+            logger.info("🛑 Wake word processor stopped")
+
+        if mic_stream:
+            mic_stream.close()
+
+        if audio_interface:
+            audio_interface.terminate()
+
+        # Clean up connections
+        for client_id in list(manager.active_connections.keys()):
+            manager.disconnect_websocket(client_id)
+
+        for client_id in list(manager.sse_connections.keys()):
+            manager.disconnect_sse(client_id)
+
+        logger.info("🧹 Cleanup completed")
+
+    except Exception as e:
+        logger.error(f"❌ Error during shutdown: {e}")
+
+
+# FastAPI app setup with lifespan
+app = FastAPI(title="Cerebus Wake Word & WebRTC Audio Server", lifespan=lifespan)
 
 # CORS middleware
 app.add_middleware(
@@ -89,6 +181,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files directory
+try:
+    app.mount("/static", StaticFiles(directory="static"), name="static")
+except RuntimeError:
+    # Directory doesn't exist, create it
+    import os
+
+    os.makedirs("static", exist_ok=True)
+    app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @dataclass
@@ -147,9 +249,13 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.sse_connections: Dict[str, asyncio.Queue] = {}
         self.audio_processors: Dict[str, "AudioProcessor"] = {}
+<<<<<<<< HEAD:wake-word/main_server.py
         # GPS and Navigation data storage
         self.navigation_sessions: Dict[str, NavigationData] = {}
         self.location_history: Dict[str, List[LocationData]] = {}
+========
+        self.agent_sessions: Dict[str, dict] = {}  # ADK agent sessions
+>>>>>>>> d920de2 (Refactor agent initialization and enhance wake word server functionality. Updated import structure to directly reference root_agent and added new agent logic for GPS and video processing capabilities. Introduced comprehensive audio feedback mechanisms for navigation assistance.):wake-word/server.py
 
     async def connect_websocket(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
@@ -185,6 +291,441 @@ class ConnectionManager:
     async def broadcast_event(self, event: AudioEvent):
         for client_id in list(self.sse_connections.keys()):
             await self.send_event_to_client(client_id, event)
+
+    async def create_agent_session(
+        self, client_id: str, is_audio: bool = False
+    ) -> dict:
+        """Create a new ADK agent session for the client"""
+        if not ADK_AGENT_AVAILABLE:
+            return {"status": "error", "message": "ADK Agent not available"}
+
+        try:
+            # Create session data structure similar to ADK example
+            session_data = {
+                "client_id": client_id,
+                "is_audio": is_audio,
+                "created_at": time.time(),
+                "last_activity": time.time(),
+                "message_history": [],
+                "agent_instance": root_agent,  # Reference to the agent
+                "session_state": "active",
+            }
+
+            self.agent_sessions[client_id] = session_data
+            logger.info(
+                f"🤖 ADK Agent session created for {client_id} (audio: {is_audio})"
+            )
+
+            return {"status": "success", "session_id": client_id, "is_audio": is_audio}
+
+        except Exception as e:
+            logger.error(f"Error creating agent session for {client_id}: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def send_message_to_agent(self, client_id: str, message: dict) -> dict:
+        """Send a message to the ADK agent and get response"""
+        if not ADK_AGENT_AVAILABLE or client_id not in self.agent_sessions:
+            return {"status": "error", "message": "Agent session not available"}
+
+        try:
+            session = self.agent_sessions[client_id]
+            session["last_activity"] = time.time()
+
+            # Add message to history
+            session["message_history"].append(
+                {
+                    "role": "user",
+                    "content": message.get("data", ""),
+                    "timestamp": time.time(),
+                    "mime_type": message.get("mime_type", "text/plain"),
+                }
+            )
+
+            # For wake word detection, trigger agent processing
+            if message.get("mime_type") == "wake_word_detected":
+                response_text = (
+                    "Cerebus agent activated. How can I help you with navigation?"
+                )
+
+                # Send agent response via SSE
+                agent_response_event = AudioEvent(
+                    event_type="agent_response",
+                    data={
+                        "message": response_text,
+                        "mime_type": "text/plain",
+                        "turn_complete": False,
+                        "session_id": client_id,
+                    },
+                    timestamp=time.time(),
+                    client_id=client_id,
+                )
+
+                await self.send_event_to_client(client_id, agent_response_event)
+
+                # Generate and send audio response
+                audio_response = await self._generate_audio_response(response_text)
+                if audio_response:
+                    audio_event = AudioEvent(
+                        event_type="agent_response",
+                        data={
+                            "data": audio_response,
+                            "mime_type": "audio/pcm",
+                            "turn_complete": False,
+                            "session_id": client_id,
+                        },
+                        timestamp=time.time(),
+                        client_id=client_id,
+                    )
+                    await self.send_event_to_client(client_id, audio_event)
+
+                # Mark turn as complete
+                complete_event = AudioEvent(
+                    event_type="agent_response",
+                    data={"turn_complete": True, "session_id": client_id},
+                    timestamp=time.time(),
+                    client_id=client_id,
+                )
+
+                await self.send_event_to_client(client_id, complete_event)
+
+                return {"status": "success", "response": response_text}
+
+            # For text messages, process through ADK agent
+            elif message.get("mime_type") == "text/plain":
+                user_message = message.get("data", "")
+
+                # Simple response for now - in full implementation would use agent.run()
+                if "navigation" in user_message.lower():
+                    response_text = "I can help you with navigation. Please provide your destination or say 'start navigation' to begin."
+                elif "status" in user_message.lower():
+                    response_text = "Navigation system is ready. GPS tracking and obstacle detection are active."
+                elif "help" in user_message.lower():
+                    response_text = "I'm Cerebus, your navigation assistant. I can help with GPS navigation, obstacle detection, and voice commands."
+                else:
+                    response_text = "I'm listening. How can I help you with navigation?"
+
+                # Send streaming text response
+                agent_response_event = AudioEvent(
+                    event_type="agent_response",
+                    data={
+                        "message": response_text,
+                        "mime_type": "text/plain",
+                        "turn_complete": False,
+                        "session_id": client_id,
+                    },
+                    timestamp=time.time(),
+                    client_id=client_id,
+                )
+
+                await self.send_event_to_client(client_id, agent_response_event)
+
+                # Generate and send audio response
+                audio_response = await self._generate_audio_response(response_text)
+                if audio_response:
+                    audio_event = AudioEvent(
+                        event_type="agent_response",
+                        data={
+                            "data": audio_response,
+                            "mime_type": "audio/pcm",
+                            "turn_complete": False,
+                            "session_id": client_id,
+                        },
+                        timestamp=time.time(),
+                        client_id=client_id,
+                    )
+                    await self.send_event_to_client(client_id, audio_event)
+
+                # Mark turn as complete
+                complete_event = AudioEvent(
+                    event_type="agent_response",
+                    data={"turn_complete": True, "session_id": client_id},
+                    timestamp=time.time(),
+                    client_id=client_id,
+                )
+
+                await self.send_event_to_client(client_id, complete_event)
+
+                return {"status": "success", "response": response_text}
+
+            # Handle audio data from ADK audio streaming interface
+            elif message.get("mime_type") == "audio/pcm":
+                audio_data_b64 = message.get("data", "")
+                logger.info(
+                    f"🎤 Received audio data for {client_id}: {len(audio_data_b64)} bytes (base64)"
+                )
+
+                # Decode base64 audio data
+                try:
+                    import base64
+
+                    audio_bytes = base64.b64decode(audio_data_b64)
+
+                    # Process audio through wake word detection if available
+                    if client_id in self.audio_processors:
+                        self.audio_processors[client_id].add_audio_data(audio_bytes)
+
+                    # Simple audio response for testing (echo back processed confirmation)
+                    await self.send_event_to_client(
+                        client_id,
+                        AudioEvent(
+                            event_type="agent_response",
+                            data={
+                                "message": f"Audio processed: {len(audio_bytes)} bytes received",
+                                "mime_type": "text/plain",
+                                "turn_complete": True,
+                                "session_id": client_id,
+                            },
+                            timestamp=time.time(),
+                            client_id=client_id,
+                        ),
+                    )
+
+                    return {
+                        "status": "success",
+                        "message": f"Audio data processed: {len(audio_bytes)} bytes",
+                    }
+
+                except Exception as e:
+                    logger.error(f"Error processing audio data for {client_id}: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"Audio processing failed: {str(e)}",
+                    }
+
+            # Handle wake word test trigger
+            elif message.get("mime_type") == "wake_word_detected":
+                logger.info(f"🔥 Wake word test triggered for {client_id}")
+
+                await self.send_event_to_client(
+                    client_id,
+                    AudioEvent(
+                        event_type="wake_word_detected",
+                        data={
+                            "confidence": message.get("data", {}).get(
+                                "confidence", 0.95
+                            ),
+                            "timestamp": time.time(),
+                            "source": "test_trigger",
+                        },
+                        timestamp=time.time(),
+                        client_id=client_id,
+                    ),
+                )
+
+                await self.send_event_to_client(
+                    client_id,
+                    AudioEvent(
+                        event_type="agent_start",
+                        data={
+                            "message": "Wake word test successful! Agent is ready.",
+                            "status": "active",
+                            "confidence": message.get("data", {}).get(
+                                "confidence", 0.95
+                            ),
+                        },
+                        timestamp=time.time(),
+                        client_id=client_id,
+                    ),
+                )
+
+                return {"status": "success", "message": "Wake word test completed"}
+
+            return {"status": "success", "message": "Message processed"}
+
+        except Exception as e:
+            logger.error(f"Error processing agent message for {client_id}: {e}")
+            return {"status": "error", "message": str(e)}
+
+    def cleanup_agent_session(self, client_id: str):
+        """Clean up agent session"""
+        if client_id in self.agent_sessions:
+            del self.agent_sessions[client_id]
+            logger.info(f"🤖 Agent session cleaned up for {client_id}")
+
+    async def _generate_audio_response(self, text: str) -> Optional[str]:
+        """Generate audio response from text using Google Cloud TTS REST API"""
+        try:
+            import base64
+            import subprocess
+
+            import requests
+
+            logger.info(f"🔊 Generating TTS audio response for: {text[:50]}...")
+
+            # Try Google Cloud TTS REST API first
+            try:
+                # Get authentication details
+                def get_access_token():
+                    try:
+                        result = subprocess.run(
+                            ["gcloud", "auth", "print-access-token"],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                        )
+                        return result.stdout.strip()
+                    except subprocess.CalledProcessError:
+                        return None
+
+                def get_project_id():
+                    try:
+                        result = subprocess.run(
+                            [
+                                "gcloud",
+                                "config",
+                                "list",
+                                "--format=value(core.project)",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                        )
+                        return result.stdout.strip()
+                    except subprocess.CalledProcessError:
+                        return None
+
+                access_token = get_access_token()
+                project_id = get_project_id()
+
+                if not access_token or not project_id:
+                    logger.warning(
+                        "⚠️ Could not get authentication details, falling back to synthetic audio"
+                    )
+                    return await self._generate_synthetic_audio(text)
+
+                logger.info(
+                    f"🔍 Using Google Cloud TTS REST API with project: {project_id}"
+                )
+
+                # Prepare headers
+                headers = {
+                    "Content-Type": "application/json",
+                    "X-Goog-User-Project": project_id,
+                    "Authorization": f"Bearer {access_token}",
+                }
+
+                # Prepare request body
+                request_body = {
+                    "input": {"text": text},
+                    "voice": {"languageCode": "en-US", "name": "en-US-Standard-C"},
+                    "audioConfig": {"audioEncoding": "LINEAR16"},
+                }
+
+                # Make the request
+                response = requests.post(
+                    "https://texttospeech.googleapis.com/v1/text:synthesize",
+                    headers=headers,
+                    json=request_body,
+                    timeout=30,
+                )
+
+                if response.status_code == 200:
+                    response_data = response.json()
+
+                    if "audioContent" in response_data:
+                        # The audioContent is already base64 encoded
+                        audio_base64 = response_data["audioContent"]
+
+                        # Decode to get raw audio data for file saving
+                        audio_data = base64.b64decode(audio_base64)
+
+                        # Save TTS audio to file for verification
+                        try:
+                            import time
+
+                            timestamp = int(time.time())
+                            filename = f"server_tts_google_rest_{timestamp}.wav"
+
+                            with open(filename, "wb") as f:
+                                f.write(audio_data)
+
+                            logger.info(f"💾 Saved Google TTS audio to: {filename}")
+                        except Exception as save_error:
+                            logger.warning(
+                                f"Could not save TTS audio file: {save_error}"
+                            )
+
+                        logger.info(
+                            f"🎵 Generated Google TTS audio: {len(audio_data)} bytes"
+                        )
+                        return audio_base64
+                    else:
+                        logger.error("No audioContent in TTS response")
+                        return await self._generate_synthetic_audio(text)
+                else:
+                    logger.error(
+                        f"❌ TTS API HTTP {response.status_code}: {response.text}"
+                    )
+                    return await self._generate_synthetic_audio(text)
+
+            except Exception as e:
+                logger.error(f"❌ Google Cloud TTS REST API error: {e}")
+                # Fall back to synthetic audio
+                return await self._generate_synthetic_audio(text)
+
+        except Exception as e:
+            logger.error(f"Error generating audio response: {e}")
+            return None
+
+    async def _generate_synthetic_audio(self, text: str) -> Optional[str]:
+        """Generate synthetic audio as fallback (original implementation)"""
+        try:
+            import base64
+
+            logger.info(f"🎵 Generating synthetic audio fallback for: {text[:50]}...")
+
+            # Generate a simple tone based on text length
+            duration = min(len(text) * 0.1, 3.0)  # Max 3 seconds
+            sample_rate = 16000
+            frequency = 440  # A4 note
+
+            # Add some variation based on text content
+            if "help" in text.lower():
+                frequency = 523  # C5 note
+            elif "navigation" in text.lower():
+                frequency = 659  # E5 note
+            elif "status" in text.lower():
+                frequency = 784  # G5 note
+
+            # Generate sine wave
+            samples = int(duration * sample_rate)
+            audio_data = np.sin(
+                2 * np.pi * frequency * np.linspace(0, duration, samples)
+            )
+
+            # Convert to int16 PCM
+            audio_data = (audio_data * 32767).astype(np.int16)
+
+            # Encode as base64
+            audio_base64 = base64.b64encode(audio_data.tobytes()).decode("utf-8")
+
+            # Save synthetic audio to file for verification
+            try:
+                import time
+
+                timestamp = int(time.time())
+                filename = f"server_tts_synthetic_{frequency}hz_{timestamp}.wav"
+
+                import wave
+
+                with wave.open(filename, "wb") as wav_file:
+                    wav_file.setnchannels(1)  # Mono
+                    wav_file.setsampwidth(2)  # 16-bit
+                    wav_file.setframerate(16000)  # 16kHz
+                    wav_file.writeframes(audio_data.tobytes())
+
+                logger.info(f"💾 Saved synthetic audio to: {filename}")
+            except Exception as save_error:
+                logger.warning(f"Could not save synthetic audio file: {save_error}")
+
+            logger.info(
+                f"🎵 Generated {len(audio_data)} synthetic audio samples ({duration:.1f}s) at {frequency}Hz"
+            )
+            return audio_base64
+
+        except Exception as e:
+            logger.error(f"Error generating synthetic audio: {e}")
+            return None
 
 
 class AudioProcessor:
@@ -348,6 +889,21 @@ class AudioProcessor:
                             timestamp=time.time(),
                             client_id=self.client_id,
                         ),
+                    )
+
+                    # Trigger agent response via the messaging system
+                    wake_word_message = {
+                        "mime_type": "wake_word_detected",
+                        "data": {
+                            "detected": True,
+                            "confidence": wake_word_score,
+                            "timestamp": time.time(),
+                        },
+                    }
+
+                    # Send to agent for processing
+                    await self.manager.send_message_to_agent(
+                        self.client_id, wake_word_message
                     )
 
                     # Trigger light control
@@ -713,7 +1269,37 @@ async def root():
         "version": "1.0.0",
         "model": args.model_path,
         "light_ip": args.light_ip,
+        "adk_agent_available": ADK_AGENT_AVAILABLE,
+        "endpoints": {
+            "sse": "/sse/{client_id}",
+            "send": "/send/{client_id}",
+            "websocket": "/ws/audio/{client_id}",
+            "test_interface": "/test",
+            "status": "/status",
+        },
     }
+
+
+@app.get("/test")
+async def test_interface():
+    """Serve the ADK agent test interface"""
+    try:
+        return FileResponse("static/adk-test.html")
+    except FileNotFoundError:
+        return {
+            "error": "Test interface not found. Please ensure static/adk-test.html exists."
+        }
+
+
+@app.get("/audio-test")
+async def audio_test_interface():
+    """Serve the complete ADK audio streaming test interface"""
+    try:
+        return FileResponse("static/adk-audio-test.html")
+    except FileNotFoundError:
+        return {
+            "error": "Audio test interface not found. Please ensure static/adk-audio-test.html exists."
+        }
 
 
 @app.get("/status")
@@ -724,12 +1310,16 @@ async def get_status():
         "active_websocket_connections": len(manager.active_connections),
         "active_sse_connections": len(manager.sse_connections),
         "active_audio_processors": len(manager.audio_processors),
+        "active_agent_sessions": len(manager.agent_sessions),
         "connected_clients": list(manager.active_connections.keys()),
+        "sse_clients": list(manager.sse_connections.keys()),
+        "agent_clients": list(manager.agent_sessions.keys()),
         "wake_word_model": args.model_path,
         "light_controller": args.light_ip,
         "microphone_active": (
             wake_word_processor.is_running if wake_word_processor else False
         ),
+        "adk_agent_available": ADK_AGENT_AVAILABLE,
         "timestamp": time.time(),
     }
 
@@ -776,6 +1366,7 @@ async def turn_off_light_endpoint():
     return {"message": "Light turned off", "ip": args.light_ip}
 
 
+<<<<<<<< HEAD:wake-word/main_server.py
 # GPS and Navigation Endpoints
 @app.post("/gps/location")
 async def update_location(location_data: dict):
@@ -1103,16 +1694,83 @@ async def get_navigation_sessions():
 
     except Exception as e:
         logger.error(f"Error getting navigation sessions: {e}")
+========
+@app.post("/test/audio_response/{client_id}")
+async def test_audio_response(client_id: str, request: Request):
+    """Test audio response generation and playback"""
+    try:
+        request_data = await request.json()
+        test_text = request_data.get(
+            "text", "This is a test audio response from Cerebus agent."
+        )
+
+        logger.info(f"🧪 Testing audio response for {client_id}: {test_text}")
+
+        # Generate audio response
+        audio_response = await manager._generate_audio_response(test_text)
+
+        if audio_response:
+            # Send text response first
+            text_event = AudioEvent(
+                event_type="agent_response",
+                data={
+                    "message": test_text,
+                    "mime_type": "text/plain",
+                    "turn_complete": False,
+                    "session_id": client_id,
+                },
+                timestamp=time.time(),
+                client_id=client_id,
+            )
+            await manager.send_event_to_client(client_id, text_event)
+
+            # Send audio response
+            audio_event = AudioEvent(
+                event_type="agent_response",
+                data={
+                    "data": audio_response,
+                    "mime_type": "audio/pcm",
+                    "turn_complete": False,
+                    "session_id": client_id,
+                },
+                timestamp=time.time(),
+                client_id=client_id,
+            )
+            await manager.send_event_to_client(client_id, audio_event)
+
+            # Mark turn complete
+            complete_event = AudioEvent(
+                event_type="agent_response",
+                data={"turn_complete": True, "session_id": client_id},
+                timestamp=time.time(),
+                client_id=client_id,
+            )
+            await manager.send_event_to_client(client_id, complete_event)
+
+            return {
+                "status": "success",
+                "message": "Audio response sent",
+                "text": test_text,
+            }
+        else:
+            return {"status": "error", "message": "Failed to generate audio response"}
+
+    except Exception as e:
+        logger.error(f"Error in audio response test: {e}")
+>>>>>>>> d920de2 (Refactor agent initialization and enhance wake word server functionality. Updated import structure to directly reference root_agent and added new agent logic for GPS and video processing capabilities. Introduced comprehensive audio feedback mechanisms for navigation assistance.):wake-word/server.py
         return {"status": "error", "message": str(e)}
 
 
 @app.get("/sse/{client_id}")
-async def sse_endpoint(client_id: str):
+async def sse_endpoint(client_id: str, is_audio: bool = False):
     """Server-Sent Events endpoint for real-time communication with frontend"""
 
     async def event_generator():
         # Connect to SSE
         event_queue = await manager.connect_sse(client_id)
+
+        # Create agent session
+        agent_session = await manager.create_agent_session(client_id, is_audio)
 
         try:
             # Send initial connection event
@@ -1121,6 +1779,8 @@ async def sse_endpoint(client_id: str):
                 "data": {
                     "message": f"SSE connected for {client_id}",
                     "timestamp": time.time(),
+                    "agent_available": ADK_AGENT_AVAILABLE,
+                    "is_audio": is_audio,
                 },
                 "timestamp": time.time(),
                 "client_id": client_id,
@@ -1160,6 +1820,7 @@ async def sse_endpoint(client_id: str):
             logger.error(f"Error in SSE stream for {client_id}: {e}")
         finally:
             manager.disconnect_sse(client_id)
+            manager.cleanup_agent_session(client_id)
             logger.info(f"SSE disconnected for {client_id}")
 
     return StreamingResponse(
@@ -1174,11 +1835,30 @@ async def sse_endpoint(client_id: str):
     )
 
 
+@app.post("/send/{client_id}")
+async def send_message_endpoint(client_id: str, request: Request):
+    """HTTP endpoint for sending messages to the agent (ADK pattern)"""
+    try:
+        # Parse the incoming message
+        message_data = await request.json()
+
+        logger.info(f"📨 [CLIENT TO AGENT] {client_id}: {message_data}")
+
+        # Send to agent and get response
+        result = await manager.send_message_to_agent(client_id, message_data)
+
+        return {"status": "success", "result": result}
+
+    except Exception as e:
+        logger.error(f"Error processing message from {client_id}: {e}")
+        return {"status": "error", "message": str(e)}
+
+
 async def timestamp_broadcaster():
     """Background task to broadcast timestamp every second for testing"""
     while True:
         try:
-            await asyncio.sleep(1.0)  # Wait 1 second
+            await asyncio.sleep(5.0)  # Wait 5 seconds
 
             # Create timestamp event
             timestamp_event = AudioEvent(
@@ -1200,52 +1880,7 @@ async def timestamp_broadcaster():
             await asyncio.sleep(1.0)  # Continue after error
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize the wake word model and start microphone processing"""
-    global owwModel, wake_word_processor, n_models
-
-    # Load pre-trained openwakeword models
-    try:
-        if args.model_path != "":
-            owwModel = Model(
-                wakeword_models=[args.model_path],
-                inference_framework=args.inference_framework,
-            )
-        else:
-            owwModel = Model(inference_framework=args.inference_framework)
-
-        n_models = len(owwModel.models.keys())
-        logger.info(f"✓ Wake word model loaded: {args.model_path}")
-        logger.info(f"✓ Available models: {list(owwModel.models.keys())}")
-
-        # Start microphone-based wake word detection
-        wake_word_processor = WakeWordProcessor()
-        wake_word_processor.start()
-
-        # Start timestamp broadcaster for testing
-        asyncio.create_task(timestamp_broadcaster())
-        logger.info("✓ Timestamp broadcaster started (1-second interval)")
-
-    except Exception as e:
-        logger.error(f"✗ Error loading wake word model: {e}")
-        owwModel = None
-        n_models = 0
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up resources"""
-    global wake_word_processor, mic_stream, audio_interface
-
-    if wake_word_processor:
-        wake_word_processor.stop()
-
-    if mic_stream:
-        mic_stream.close()
-
-    if audio_interface:
-        audio_interface.terminate()
+# Event handlers have been moved to lifespan function above
 
 
 if __name__ == "__main__":
