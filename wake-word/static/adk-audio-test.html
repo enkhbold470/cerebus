@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cerebus ADK Audio Streaming Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        #messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 20px;
+            background-color: #fafafa;
+            border-radius: 4px;
+        }
+
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        .user-message {
+            background-color: #e3f2fd;
+            text-align: right;
+        }
+
+        .agent-message {
+            background-color: #f1f8e9;
+        }
+
+        .system-message {
+            background-color: #fff3e0;
+            font-style: italic;
+        }
+
+        .audio-message {
+            background-color: #e8f5e8;
+            border-left: 4px solid #4caf50;
+        }
+
+        .wake-word-message {
+            background-color: #ffcdd2;
+            color: #c62828;
+            font-weight: bold;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .text-mode,
+        .audio-mode {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .mode-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+
+        .text-mode .mode-title {
+            background-color: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .audio-mode .mode-title {
+            background-color: #f3e5f5;
+            color: #7b1fa2;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        button {
+            background-color: #2196f3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        button:hover:not(:disabled) {
+            background-color: #1976d2;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .audio-button {
+            background-color: #9c27b0;
+        }
+
+        .audio-button:hover:not(:disabled) {
+            background-color: #7b1fa2;
+        }
+
+        .recording {
+            background-color: #f44336;
+            animation: pulse 1s infinite;
+        }
+
+        .status {
+            margin-bottom: 20px;
+            padding: 15px;
+            border-radius: 4px;
+            background-color: #e8f5e8;
+            border-left: 4px solid #4caf50;
+        }
+
+        .status-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 15px;
+        }
+
+        .connection-status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .connected {
+            background-color: #4caf50;
+            color: white;
+        }
+
+        .disconnected {
+            background-color: #f44336;
+            color: white;
+        }
+
+        .audio-visualizer {
+            width: 100%;
+            height: 40px;
+            background-color: #f0f0f0;
+            border-radius: 4px;
+            margin: 10px 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .audio-level {
+            height: 100%;
+            background: linear-gradient(90deg, #4caf50, #ffeb3b, #f44336);
+            border-radius: 4px;
+            transition: width 0.1s;
+        }
+
+        .debug-info {
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 150px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🎤 Cerebus ADK Audio Streaming Test</h1>
+
+        <div class="status">
+            <div class="status-grid">
+                <div>
+                    <strong>Connection:</strong>
+                    <span id="connectionStatus" class="connection-status disconnected">Disconnected</span>
+                </div>
+                <div>
+                    <strong>Audio Mode:</strong>
+                    <span id="audioModeStatus">Text Only</span>
+                </div>
+                <div>
+                    <strong>Client ID:</strong>
+                    <span id="clientId">-</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="messages"></div>
+
+        <div class="controls">
+            <!-- Text Mode Controls -->
+            <div class="text-mode">
+                <div class="mode-title">💬 Text Communication</div>
+                <input type="text" id="messageInput" placeholder="Type your message here..." disabled>
+                <div>
+                    <button id="sendTextButton" disabled>Send Text</button>
+                    <button id="testWakeWord" disabled>Test Wake Word</button>
+                    <button id="testAudioResponse" disabled>Test Audio Response</button>
+                </div>
+            </div>
+
+            <!-- Audio Mode Controls -->
+            <div class="audio-mode">
+                <div class="mode-title">🎤 Audio Communication</div>
+                <div>
+                    <button id="startAudioButton" class="audio-button">Start Audio Mode</button>
+                    <button id="recordButton" class="audio-button" disabled>🎤 Hold to Record</button>
+                    <button id="stopAudioButton" class="audio-button" disabled>Stop Audio Mode</button>
+                </div>
+                <div class="audio-visualizer">
+                    <div id="audioLevel" class="audio-level" style="width: 0%"></div>
+                </div>
+                <div>
+                    <small>Recording Level: <span id="recordingLevel">0</span> | Playing Level: <span
+                            id="playingLevel">0</span></small>
+                </div>
+            </div>
+        </div>
+
+        <button id="clearMessages">Clear Messages</button>
+
+        <div class="debug-info" id="debugInfo">
+            <strong>Debug Information:</strong><br>
+            Waiting for connection...
+        </div>
+    </div>
+
+    <script>
+        // Generate session ID
+        const sessionId = Math.random().toString().substring(10);
+        document.getElementById('clientId').textContent = sessionId;
+
+        // Global variables
+        let eventSource = null;
+        let isConnected = false;
+        let isAudioMode = false;
+        let isRecording = false;
+        let audioContext = null;
+        let audioPlayerNode = null;
+        let audioRecorderNode = null;
+        let microphoneStream = null;
+        let currentMessageId = null;
+
+        // URLs
+        const sse_url = `http://localhost:8000/sse/${sessionId}`;
+        const send_url = `http://localhost:8000/send/${sessionId}`;
+
+        // DOM elements
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendTextButton = document.getElementById('sendTextButton');
+        const testWakeWordButton = document.getElementById('testWakeWord');
+        const testAudioResponseButton = document.getElementById('testAudioResponse');
+        const startAudioButton = document.getElementById('startAudioButton');
+        const recordButton = document.getElementById('recordButton');
+        const stopAudioButton = document.getElementById('stopAudioButton');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const audioModeStatus = document.getElementById('audioModeStatus');
+        const debugInfo = document.getElementById('debugInfo');
+        const audioLevel = document.getElementById('audioLevel');
+        const recordingLevel = document.getElementById('recordingLevel');
+        const playingLevel = document.getElementById('playingLevel');
+
+        // Debug logging
+        function debugLog(message) {
+            const timestamp = new Date().toLocaleTimeString();
+            debugInfo.innerHTML += `<br>[${timestamp}] ${message}`;
+            debugInfo.scrollTop = debugInfo.scrollHeight;
+            console.log(`[DEBUG] ${message}`);
+        }
+
+        // Audio utility functions
+        function base64ToArray(base64) {
+            const binaryString = window.atob(base64);
+            const len = binaryString.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) {
+                bytes[i] = binaryString.charCodeAt(i);
+            }
+            return new Int16Array(bytes.buffer);
+        }
+
+        function arrayToBase64(array) {
+            const bytes = new Uint8Array(array.buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return window.btoa(binary);
+        }
+
+        // SSE Connection
+        function connectSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            const sseUrl = `${sse_url}?is_audio=${isAudioMode}`;
+            debugLog(`Connecting to SSE: ${sseUrl}`);
+
+            eventSource = new EventSource(sseUrl);
+
+            eventSource.onopen = function () {
+                debugLog('SSE connection opened');
+                isConnected = true;
+                updateConnectionStatus();
+                enableControls();
+            };
+
+            eventSource.onmessage = function (event) {
+                const message = JSON.parse(event.data);
+                debugLog(`SSE event: ${message.type}`);
+                handleServerMessage(message);
+            };
+
+            eventSource.onerror = function (event) {
+                debugLog('SSE connection error');
+                isConnected = false;
+                updateConnectionStatus();
+                disableControls();
+
+                setTimeout(() => {
+                    debugLog('Attempting reconnection...');
+                    connectSSE();
+                }, 5000);
+            };
+        }
+
+        // Handle server messages
+        function handleServerMessage(message) {
+            switch (message.type) {
+                case 'connected':
+                    addMessage('system', `Connected to server. Audio mode: ${isAudioMode}`);
+                    break;
+
+                case 'wake_word_detected':
+                    addMessage('wake-word', `🔥 WAKE WORD DETECTED! Confidence: ${(message.data.confidence * 100).toFixed(1)}%`);
+                    break;
+
+                case 'agent_start':
+                    addMessage('system', `🤖 ${message.data.message}`);
+                    break;
+
+                case 'agent_response':
+                    if (message.data.turn_complete) {
+                        currentMessageId = null;
+                        debugLog('Agent turn completed');
+                    } else {
+                        // Handle both text and audio responses
+                        if (message.data.mime_type === 'text/plain') {
+                            handleTextResponse(message.data.message || message.data.data);
+                        } else if (message.data.mime_type === 'audio/pcm') {
+                            handleAudioResponse(message.data.data);
+                        }
+                    }
+                    break;
+
+                case 'audio_level':
+                    if (message.data.level) {
+                        playingLevel.textContent = Math.round(message.data.level);
+                    }
+                    break;
+
+                case 'keepalive':
+                    debugLog('Keepalive received');
+                    break;
+
+                default:
+                    addMessage('system', `${message.type}: ${JSON.stringify(message.data)}`);
+            }
+        }
+
+        // Handle text response
+        function handleTextResponse(text) {
+            if (currentMessageId === null) {
+                currentMessageId = Math.random().toString(36).substring(7);
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message agent-message';
+                messageDiv.id = currentMessageId;
+
+                const timestamp = new Date().toLocaleTimeString();
+                messageDiv.innerHTML = `<strong>[${timestamp}] Agent:</strong> `;
+
+                messagesDiv.appendChild(messageDiv);
+            }
+
+            const messageDiv = document.getElementById(currentMessageId);
+            const currentText = messageDiv.textContent || messageDiv.innerHTML;
+            messageDiv.innerHTML = currentText + text;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Handle audio response
+        function handleAudioResponse(audioData) {
+            if (audioPlayerNode && audioData) {
+                debugLog('Playing audio response');
+                const audioArray = base64ToArray(audioData);
+                audioPlayerNode.port.postMessage(audioArray);
+                addMessage('audio', '🔊 Playing audio response from agent');
+            }
+        }
+
+        // Send message to server
+        async function sendMessage(messageData) {
+            try {
+                debugLog(`Sending message: ${messageData.mime_type}`);
+
+                const response = await fetch(send_url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(messageData)
+                });
+
+                const result = await response.json();
+                debugLog(`Message sent, status: ${result.status}`);
+
+                if (!response.ok) {
+                    addMessage('system', `Error: ${result.message || 'Unknown error'}`);
+                }
+            } catch (error) {
+                debugLog(`Network error: ${error.message}`);
+                addMessage('system', `Network error: ${error.message}`);
+            }
+        }
+
+        // Audio setup functions
+        async function setupAudio() {
+            try {
+                debugLog('Setting up audio...');
+
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+
+                // Load audio worklet processors
+                await setupAudioPlayer();
+                await setupAudioRecorder();
+
+                debugLog('Audio setup completed');
+                return true;
+            } catch (error) {
+                debugLog(`Audio setup failed: ${error.message}`);
+                return false;
+            }
+        }
+
+        async function setupAudioPlayer() {
+            try {
+                // Create audio player worklet
+                const audioPlayerWorklet = `
+                    class PCMPlayerProcessor extends AudioWorkletProcessor {
+                        constructor() {
+                            super();
+                            this.bufferSize = 24000 * 180; // 180 seconds at 24kHz
+                            this.buffer = new Float32Array(this.bufferSize);
+                            this.writeIndex = 0;
+                            this.readIndex = 0;
+                            this.availableSamples = 0;
+                            
+                            this.port.onmessage = (event) => {
+                                this.addAudioData(event.data);
+                            };
+                        }
+                        
+                        addAudioData(int16Array) {
+                            const float32Array = new Float32Array(int16Array.length);
+                            for (let i = 0; i < int16Array.length; i++) {
+                                float32Array[i] = int16Array[i] / 32768.0;
+                            }
+                            
+                            for (let i = 0; i < float32Array.length; i++) {
+                                this.buffer[this.writeIndex] = float32Array[i];
+                                this.writeIndex = (this.writeIndex + 1) % this.bufferSize;
+                                if (this.availableSamples < this.bufferSize) {
+                                    this.availableSamples++;
+                                } else {
+                                    this.readIndex = (this.readIndex + 1) % this.bufferSize;
+                                }
+                            }
+                        }
+                        
+                        process(inputs, outputs, parameters) {
+                            const output = outputs[0];
+                            const outputChannels = output.length;
+                            
+                            if (outputChannels > 0) {
+                                const outputChannel = output[0];
+                                const framesToGenerate = outputChannel.length;
+                                
+                                for (let i = 0; i < framesToGenerate; i++) {
+                                    if (this.availableSamples > 0) {
+                                        const sample = this.buffer[this.readIndex];
+                                        for (let channel = 0; channel < outputChannels; channel++) {
+                                            output[channel][i] = sample;
+                                        }
+                                        this.readIndex = (this.readIndex + 1) % this.bufferSize;
+                                        this.availableSamples--;
+                                    } else {
+                                        for (let channel = 0; channel < outputChannels; channel++) {
+                                            output[channel][i] = 0;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            return true;
+                        }
+                    }
+                    
+                    registerProcessor('pcm-player-processor', PCMPlayerProcessor);
+                `;
+
+                const blob = new Blob([audioPlayerWorklet], { type: 'application/javascript' });
+                const audioPlayerWorkletURL = URL.createObjectURL(blob);
+
+                await audioContext.audioWorklet.addModule(audioPlayerWorkletURL);
+                audioPlayerNode = new AudioWorkletNode(audioContext, 'pcm-player-processor');
+                audioPlayerNode.connect(audioContext.destination);
+
+                debugLog('Audio player setup completed');
+            } catch (error) {
+                debugLog(`Audio player setup failed: ${error.message}`);
+            }
+        }
+
+        async function setupAudioRecorder() {
+            try {
+                // Create audio recorder worklet
+                const audioRecorderWorklet = `
+                    class PCMRecorderProcessor extends AudioWorkletProcessor {
+                        constructor() {
+                            super();
+                            this.bufferSize = 1024;
+                            this.buffer = new Float32Array(this.bufferSize);
+                            this.bufferIndex = 0;
+                        }
+                        
+                        process(inputs, outputs, parameters) {
+                            const input = inputs[0];
+                            if (input.length > 0) {
+                                const inputChannel = input[0];
+                                
+                                for (let i = 0; i < inputChannel.length; i++) {
+                                    this.buffer[this.bufferIndex] = inputChannel[i];
+                                    this.bufferIndex++;
+                                    
+                                    if (this.bufferIndex >= this.bufferSize) {
+                                        // Convert to Int16 and send
+                                        const int16Buffer = new Int16Array(this.bufferSize);
+                                        for (let j = 0; j < this.bufferSize; j++) {
+                                            int16Buffer[j] = Math.max(-32768, Math.min(32767, this.buffer[j] * 32768));
+                                        }
+                                        
+                                        this.port.postMessage(int16Buffer);
+                                        this.bufferIndex = 0;
+                                    }
+                                }
+                            }
+                            
+                            return true;
+                        }
+                    }
+                    
+                    registerProcessor('pcm-recorder-processor', PCMRecorderProcessor);
+                `;
+
+                const blob = new Blob([audioRecorderWorklet], { type: 'application/javascript' });
+                const audioRecorderWorkletURL = URL.createObjectURL(blob);
+
+                await audioContext.audioWorklet.addModule(audioRecorderWorkletURL);
+
+                debugLog('Audio recorder setup completed');
+            } catch (error) {
+                debugLog(`Audio recorder setup failed: ${error.message}`);
+            }
+        }
+
+        async function startMicrophone() {
+            try {
+                debugLog('Starting microphone...');
+
+                microphoneStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    }
+                });
+
+                const microphoneSource = audioContext.createMediaStreamSource(microphoneStream);
+                audioRecorderNode = new AudioWorkletNode(audioContext, 'pcm-recorder-processor');
+
+                audioRecorderNode.port.onmessage = (event) => {
+                    if (isRecording) {
+                        const audioData = event.data;
+
+                        // Update level indicator
+                        const level = Math.abs(audioData.reduce((sum, sample) => sum + sample, 0)) / audioData.length;
+                        const levelPercent = Math.min(100, (level / 1000) * 100);
+                        audioLevel.style.width = `${levelPercent}%`;
+                        recordingLevel.textContent = Math.round(level);
+
+                        // Send audio data to server
+                        const base64Data = arrayToBase64(audioData);
+                        sendMessage({
+                            mime_type: 'audio/pcm',
+                            data: base64Data
+                        });
+                    }
+                };
+
+                microphoneSource.connect(audioRecorderNode);
+                debugLog('Microphone started successfully');
+                return true;
+            } catch (error) {
+                debugLog(`Microphone setup failed: ${error.message}`);
+                return false;
+            }
+        }
+
+        // UI update functions
+        function updateConnectionStatus() {
+            connectionStatus.textContent = isConnected ? 'Connected' : 'Disconnected';
+            connectionStatus.className = `connection-status ${isConnected ? 'connected' : 'disconnected'}`;
+        }
+
+        function updateAudioMode() {
+            audioModeStatus.textContent = isAudioMode ? 'Audio Mode' : 'Text Only';
+        }
+
+        function enableControls() {
+            messageInput.disabled = false;
+            sendTextButton.disabled = false;
+            testWakeWordButton.disabled = false;
+            testAudioResponseButton.disabled = false;
+            startAudioButton.disabled = false;
+        }
+
+        function disableControls() {
+            messageInput.disabled = true;
+            sendTextButton.disabled = true;
+            testWakeWordButton.disabled = true;
+            testAudioResponseButton.disabled = true;
+            startAudioButton.disabled = true;
+            recordButton.disabled = true;
+            stopAudioButton.disabled = true;
+        }
+
+        function addMessage(type, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+
+            const timestamp = new Date().toLocaleTimeString();
+            messageDiv.innerHTML = `<strong>[${timestamp}]</strong> ${content}`;
+
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Event listeners
+        sendTextButton.addEventListener('click', function () {
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            addMessage('user', message);
+            sendMessage({
+                mime_type: 'text/plain',
+                data: message
+            });
+            messageInput.value = '';
+        });
+
+        messageInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                sendTextButton.click();
+            }
+        });
+
+        testWakeWordButton.addEventListener('click', function () {
+            addMessage('system', 'Testing wake word detection...');
+            sendMessage({
+                mime_type: 'wake_word_detected',
+                data: {
+                    detected: true,
+                    confidence: 0.95,
+                    timestamp: Date.now() / 1000
+                }
+            });
+        });
+
+        document.getElementById('testAudioResponse').addEventListener('click', async function () {
+            const testTexts = [
+                "This is a test audio response from Cerebus agent.",
+                "Navigation help message test.",
+                "System status check audio response.",
+                "Cerebus is ready to assist with navigation."
+            ];
+
+            const randomText = testTexts[Math.floor(Math.random() * testTexts.length)];
+            addMessage('system', `Testing audio response: "${randomText}"`);
+
+            try {
+                const response = await fetch(`http://localhost:8000/test/audio_response/${sessionId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ text: randomText })
+                });
+
+                const result = await response.json();
+                if (result.status === 'success') {
+                    debugLog('Audio response test triggered successfully');
+                } else {
+                    addMessage('system', `Audio test failed: ${result.message}`);
+                }
+            } catch (error) {
+                addMessage('system', `Audio test error: ${error.message}`);
+                debugLog(`Audio test error: ${error.message}`);
+            }
+        });
+
+        startAudioButton.addEventListener('click', async function () {
+            debugLog('Starting audio mode...');
+
+            const audioSetupSuccess = await setupAudio();
+            if (!audioSetupSuccess) {
+                addMessage('system', 'Failed to setup audio. Please check microphone permissions.');
+                return;
+            }
+
+            const micSuccess = await startMicrophone();
+            if (!micSuccess) {
+                addMessage('system', 'Failed to access microphone. Please check permissions.');
+                return;
+            }
+
+            isAudioMode = true;
+            updateAudioMode();
+
+            // Reconnect SSE with audio mode
+            connectSSE();
+
+            startAudioButton.disabled = true;
+            recordButton.disabled = false;
+            stopAudioButton.disabled = false;
+
+            addMessage('audio', '🎤 Audio mode activated. Click "Hold to Record" to speak.');
+        });
+
+        recordButton.addEventListener('mousedown', function () {
+            if (!isRecording) {
+                isRecording = true;
+                recordButton.textContent = '🔴 Recording...';
+                recordButton.classList.add('recording');
+                addMessage('audio', '🎤 Recording started...');
+                debugLog('Recording started');
+            }
+        });
+
+        recordButton.addEventListener('mouseup', function () {
+            if (isRecording) {
+                isRecording = false;
+                recordButton.textContent = '🎤 Hold to Record';
+                recordButton.classList.remove('recording');
+                audioLevel.style.width = '0%';
+                addMessage('audio', '⏹️ Recording stopped');
+                debugLog('Recording stopped');
+            }
+        });
+
+        // Handle mouse leave to stop recording
+        recordButton.addEventListener('mouseleave', function () {
+            if (isRecording) {
+                recordButton.dispatchEvent(new Event('mouseup'));
+            }
+        });
+
+        stopAudioButton.addEventListener('click', function () {
+            isAudioMode = false;
+            isRecording = false;
+            updateAudioMode();
+
+            if (microphoneStream) {
+                microphoneStream.getTracks().forEach(track => track.stop());
+                microphoneStream = null;
+            }
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            // Reconnect SSE in text mode
+            connectSSE();
+
+            startAudioButton.disabled = false;
+            recordButton.disabled = true;
+            stopAudioButton.disabled = true;
+            recordButton.textContent = '🎤 Hold to Record';
+            recordButton.classList.remove('recording');
+            audioLevel.style.width = '0%';
+
+            addMessage('audio', '🔇 Audio mode deactivated');
+        });
+
+        document.getElementById('clearMessages').addEventListener('click', function () {
+            messagesDiv.innerHTML = '';
+            debugInfo.innerHTML = '<strong>Debug Information:</strong><br>Messages cleared.';
+        });
+
+        // Handle server messages
+        function handleServerMessage(message) {
+            switch (message.type) {
+                case 'connected':
+                    addMessage('system', `Connected to server. Audio mode: ${isAudioMode}`);
+                    break;
+
+                case 'wake_word_detected':
+                    addMessage('wake-word', `🔥 WAKE WORD DETECTED! Confidence: ${(message.data.confidence * 100).toFixed(1)}%`);
+                    break;
+
+                case 'agent_start':
+                    addMessage('system', `🤖 ${message.data.message}`);
+                    break;
+
+                case 'agent_response':
+                    if (message.data.turn_complete) {
+                        currentMessageId = null;
+                        debugLog('Agent turn completed');
+                    } else {
+                        // Handle both text and audio responses
+                        if (message.data.mime_type === 'text/plain') {
+                            handleTextResponse(message.data.message || message.data.data);
+                        } else if (message.data.mime_type === 'audio/pcm') {
+                            handleAudioResponse(message.data.data);
+                        }
+                    }
+                    break;
+
+                case 'audio_level':
+                    if (message.data.level) {
+                        playingLevel.textContent = Math.round(message.data.level);
+                    }
+                    break;
+
+                case 'keepalive':
+                    debugLog('Keepalive received');
+                    break;
+
+                default:
+                    addMessage('system', `${message.type}: ${JSON.stringify(message.data)}`);
+            }
+        }
+
+        // Handle text response (streaming)
+        function handleTextResponse(text) {
+            if (currentMessageId === null) {
+                currentMessageId = Math.random().toString(36).substring(7);
+                const messageDiv = document.createElement('div');
+                messageDiv.className = 'message agent-message';
+                messageDiv.id = currentMessageId;
+
+                const timestamp = new Date().toLocaleTimeString();
+                messageDiv.innerHTML = `<strong>[${timestamp}] Agent:</strong> `;
+
+                messagesDiv.appendChild(messageDiv);
+            }
+
+            const messageDiv = document.getElementById(currentMessageId);
+            const currentText = messageDiv.textContent || messageDiv.innerHTML;
+            messageDiv.innerHTML = currentText + text;
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Handle audio response
+        function handleAudioResponse(audioData) {
+            if (audioPlayerNode && audioData) {
+                debugLog('Playing audio response');
+                const audioArray = base64ToArray(audioData);
+                audioPlayerNode.port.postMessage(audioArray);
+                addMessage('audio', '🔊 Playing audio response from agent');
+            }
+        }
+
+        // Send message to server
+        async function sendMessage(messageData) {
+            try {
+                debugLog(`Sending message: ${messageData.mime_type}`);
+
+                const response = await fetch(send_url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(messageData)
+                });
+
+                const result = await response.json();
+                debugLog(`Message sent, status: ${result.status}`);
+
+                if (!response.ok) {
+                    addMessage('system', `Error: ${result.message || 'Unknown error'}`);
+                }
+            } catch (error) {
+                debugLog(`Network error: ${error.message}`);
+                addMessage('system', `Network error: ${error.message}`);
+            }
+        }
+
+        // Audio setup functions
+        async function setupAudio() {
+            try {
+                debugLog('Setting up audio...');
+
+                // Create audio context
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: 16000
+                });
+
+                // Load audio worklet processors
+                await setupAudioPlayer();
+                await setupAudioRecorder();
+
+                debugLog('Audio setup completed');
+                return true;
+            } catch (error) {
+                debugLog(`Audio setup failed: ${error.message}`);
+                return false;
+            }
+        }
+
+        async function setupAudioPlayer() {
+            try {
+                // PCM Player Processor (matching ADK pattern)
+                const audioPlayerWorklet = `
+                    class PCMPlayerProcessor extends AudioWorkletProcessor {
+                        constructor() {
+                            super();
+                            this.bufferSize = 24000 * 180; // 180 seconds at 24kHz
+                            this.buffer = new Float32Array(this.bufferSize);
+                            this.writeIndex = 0;
+                            this.readIndex = 0;
+                            this.availableSamples = 0;
+                            
+                            this.port.onmessage = (event) => {
+                                this.addAudioData(event.data);
+                            };
+                        }
+                        
+                        addAudioData(int16Array) {
+                            const float32Array = new Float32Array(int16Array.length);
+                            for (let i = 0; i < int16Array.length; i++) {
+                                float32Array[i] = int16Array[i] / 32768.0;
+                            }
+                            
+                            for (let i = 0; i < float32Array.length; i++) {
+                                this.buffer[this.writeIndex] = float32Array[i];
+                                this.writeIndex = (this.writeIndex + 1) % this.bufferSize;
+                                if (this.availableSamples < this.bufferSize) {
+                                    this.availableSamples++;
+                                } else {
+                                    this.readIndex = (this.readIndex + 1) % this.bufferSize;
+                                }
+                            }
+                        }
+                        
+                        process(inputs, outputs, parameters) {
+                            const output = outputs[0];
+                            const outputChannels = output.length;
+                            
+                            if (outputChannels > 0) {
+                                const outputChannel = output[0];
+                                const framesToGenerate = outputChannel.length;
+                                
+                                for (let i = 0; i < framesToGenerate; i++) {
+                                    if (this.availableSamples > 0) {
+                                        const sample = this.buffer[this.readIndex];
+                                        for (let channel = 0; channel < outputChannels; channel++) {
+                                            output[channel][i] = sample;
+                                        }
+                                        this.readIndex = (this.readIndex + 1) % this.bufferSize;
+                                        this.availableSamples--;
+                                    } else {
+                                        for (let channel = 0; channel < outputChannels; channel++) {
+                                            output[channel][i] = 0;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            return true;
+                        }
+                    }
+                    
+                    registerProcessor('pcm-player-processor', PCMPlayerProcessor);
+                `;
+
+                const blob = new Blob([audioPlayerWorklet], { type: 'application/javascript' });
+                const audioPlayerWorkletURL = URL.createObjectURL(blob);
+
+                await audioContext.audioWorklet.addModule(audioPlayerWorkletURL);
+                audioPlayerNode = new AudioWorkletNode(audioContext, 'pcm-player-processor');
+                audioPlayerNode.connect(audioContext.destination);
+
+                debugLog('Audio player setup completed');
+            } catch (error) {
+                debugLog(`Audio player setup failed: ${error.message}`);
+            }
+        }
+
+        async function setupAudioRecorder() {
+            try {
+                // PCM Recorder Processor (matching ADK pattern)
+                const audioRecorderWorklet = `
+                    class PCMRecorderProcessor extends AudioWorkletProcessor {
+                        constructor() {
+                            super();
+                            this.bufferSize = 1024;
+                            this.buffer = new Float32Array(this.bufferSize);
+                            this.bufferIndex = 0;
+                        }
+                        
+                        process(inputs, outputs, parameters) {
+                            const input = inputs[0];
+                            if (input.length > 0) {
+                                const inputChannel = input[0];
+                                
+                                for (let i = 0; i < inputChannel.length; i++) {
+                                    this.buffer[this.bufferIndex] = inputChannel[i];
+                                    this.bufferIndex++;
+                                    
+                                    if (this.bufferIndex >= this.bufferSize) {
+                                        // Convert to Int16 and send
+                                        const int16Buffer = new Int16Array(this.bufferSize);
+                                        for (let j = 0; j < this.bufferSize; j++) {
+                                            int16Buffer[j] = Math.max(-32768, Math.min(32767, this.buffer[j] * 32768));
+                                        }
+                                        
+                                        this.port.postMessage(int16Buffer);
+                                        this.bufferIndex = 0;
+                                    }
+                                }
+                            }
+                            
+                            return true;
+                        }
+                    }
+                    
+                    registerProcessor('pcm-recorder-processor', PCMRecorderProcessor);
+                `;
+
+                const blob = new Blob([audioRecorderWorklet], { type: 'application/javascript' });
+                const audioRecorderWorkletURL = URL.createObjectURL(blob);
+
+                await audioContext.audioWorklet.addModule(audioRecorderWorkletURL);
+
+                debugLog('Audio recorder setup completed');
+            } catch (error) {
+                debugLog(`Audio recorder setup failed: ${error.message}`);
+            }
+        }
+
+        async function startMicrophone() {
+            try {
+                debugLog('Starting microphone...');
+
+                microphoneStream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    }
+                });
+
+                const microphoneSource = audioContext.createMediaStreamSource(microphoneStream);
+                audioRecorderNode = new AudioWorkletNode(audioContext, 'pcm-recorder-processor');
+
+                let audioPacketCount = 0;
+                let lastAudioSent = 0;
+                const AUDIO_SEND_INTERVAL = 100; // Send audio every 100ms to prevent spam
+
+                audioRecorderNode.port.onmessage = (event) => {
+                    if (isRecording) {
+                        const audioData = event.data;
+                        audioPacketCount++;
+
+                        // Update level indicator
+                        const level = Math.abs(audioData.reduce((sum, sample) => sum + sample, 0)) / audioData.length;
+                        const levelPercent = Math.min(100, (level / 1000) * 100);
+                        audioLevel.style.width = `${levelPercent}%`;
+                        recordingLevel.textContent = Math.round(level);
+
+                        // Rate limit audio sending to prevent rapid POST requests
+                        const now = Date.now();
+                        if (now - lastAudioSent > AUDIO_SEND_INTERVAL) {
+                            // Send audio data to server (Base64 encoded PCM)
+                            const base64Data = arrayToBase64(audioData);
+                            sendMessage({
+                                mime_type: 'audio/pcm',
+                                data: base64Data
+                            });
+                            lastAudioSent = now;
+
+                            // Debug info every 50 packets
+                            if (audioPacketCount % 50 === 0) {
+                                debugLog(`Audio packets processed: ${audioPacketCount}`);
+                            }
+                        }
+                    }
+                };
+
+                microphoneSource.connect(audioRecorderNode);
+                debugLog('Microphone started successfully');
+                return true;
+            } catch (error) {
+                debugLog(`Microphone setup failed: ${error.message}`);
+                return false;
+            }
+        }
+
+        // UI update functions
+        function updateConnectionStatus() {
+            connectionStatus.textContent = isConnected ? 'Connected' : 'Disconnected';
+            connectionStatus.className = `connection-status ${isConnected ? 'connected' : 'disconnected'}`;
+        }
+
+        function updateAudioMode() {
+            audioModeStatus.textContent = isAudioMode ? 'Audio Mode' : 'Text Only';
+        }
+
+        function enableControls() {
+            messageInput.disabled = false;
+            sendTextButton.disabled = false;
+            testWakeWordButton.disabled = false;
+            startAudioButton.disabled = false;
+        }
+
+        function disableControls() {
+            messageInput.disabled = true;
+            sendTextButton.disabled = true;
+            testWakeWordButton.disabled = true;
+            startAudioButton.disabled = true;
+            recordButton.disabled = true;
+            stopAudioButton.disabled = true;
+        }
+
+        function addMessage(type, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+
+            const timestamp = new Date().toLocaleTimeString();
+            messageDiv.innerHTML = `<strong>[${timestamp}]</strong> ${content}`;
+
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Event listeners
+        sendTextButton.addEventListener('click', function () {
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            addMessage('user', message);
+            sendMessage({
+                mime_type: 'text/plain',
+                data: message
+            });
+            messageInput.value = '';
+        });
+
+        messageInput.addEventListener('keypress', function (e) {
+            if (e.key === 'Enter') {
+                sendTextButton.click();
+            }
+        });
+
+        testWakeWordButton.addEventListener('click', function () {
+            addMessage('system', 'Testing wake word detection...');
+            sendMessage({
+                mime_type: 'wake_word_detected',
+                data: {
+                    detected: true,
+                    confidence: 0.95,
+                    timestamp: Date.now() / 1000
+                }
+            });
+        });
+
+        startAudioButton.addEventListener('click', async function () {
+            debugLog('Starting audio mode...');
+
+            const audioSetupSuccess = await setupAudio();
+            if (!audioSetupSuccess) {
+                addMessage('system', 'Failed to setup audio. Please check microphone permissions.');
+                return;
+            }
+
+            const micSuccess = await startMicrophone();
+            if (!micSuccess) {
+                addMessage('system', 'Failed to access microphone. Please check permissions.');
+                return;
+            }
+
+            isAudioMode = true;
+            updateAudioMode();
+
+            // Reconnect SSE with audio mode
+            connectSSE();
+
+            startAudioButton.disabled = true;
+            recordButton.disabled = false;
+            stopAudioButton.disabled = false;
+
+            addMessage('audio', '🎤 Audio mode activated. Click "Hold to Record" to speak.');
+        });
+
+        recordButton.addEventListener('mousedown', function () {
+            if (!isRecording) {
+                isRecording = true;
+                recordButton.textContent = '🔴 Recording...';
+                recordButton.classList.add('recording');
+                addMessage('audio', '🎤 Recording started...');
+                debugLog('Recording started');
+            }
+        });
+
+        recordButton.addEventListener('mouseup', function () {
+            if (isRecording) {
+                isRecording = false;
+                recordButton.textContent = '🎤 Hold to Record';
+                recordButton.classList.remove('recording');
+                audioLevel.style.width = '0%';
+                addMessage('audio', '⏹️ Recording stopped');
+                debugLog('Recording stopped');
+            }
+        });
+
+        // Handle mouse leave to stop recording
+        recordButton.addEventListener('mouseleave', function () {
+            if (isRecording) {
+                recordButton.dispatchEvent(new Event('mouseup'));
+            }
+        });
+
+        stopAudioButton.addEventListener('click', function () {
+            isAudioMode = false;
+            isRecording = false;
+            updateAudioMode();
+
+            if (microphoneStream) {
+                microphoneStream.getTracks().forEach(track => track.stop());
+                microphoneStream = null;
+            }
+
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+
+            // Reconnect SSE in text mode
+            connectSSE();
+
+            startAudioButton.disabled = false;
+            recordButton.disabled = true;
+            stopAudioButton.disabled = true;
+            recordButton.textContent = '🎤 Hold to Record';
+            recordButton.classList.remove('recording');
+            audioLevel.style.width = '0%';
+
+            addMessage('audio', '🔇 Audio mode deactivated');
+        });
+
+        document.getElementById('clearMessages').addEventListener('click', function () {
+            messagesDiv.innerHTML = '';
+            debugInfo.innerHTML = '<strong>Debug Information:</strong><br>Messages cleared.';
+        });
+
+        // Initialize
+        debugLog('Initializing Cerebus ADK Audio Streaming Test');
+        connectSSE();
+    </script>
+</body>
+
+</html>
