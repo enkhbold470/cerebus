@@ -52,7 +52,7 @@ class GPSService {
     // Stop any existing tracking
     this.stopTracking();
 
-    const id = sessionId || `gps_${Date.now()}`;
+    const id = sessionId || 'default';
     
     this.currentSession = {
       sessionId: id,

@@ -137,7 +137,7 @@ class MapsService {
             this.pushToServer({
               type: 'route_calculated',
               timestamp: Date.now(),
-              sessionId: `route_${Date.now()}`,
+              sessionId: 'default',
               data: routeResult,
             });
 
@@ -184,7 +184,7 @@ class MapsService {
           this.pushToServer({
             type: 'places_search',
             timestamp: Date.now(),
-            sessionId: `search_${Date.now()}`,
+            sessionId: 'default',
             data: places,
           });
 
