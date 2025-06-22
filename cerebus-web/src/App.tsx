@@ -1,11 +1,9 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import reactLogo from './assets/react.svg';
 import viteLogo from '/vite.svg';
-import { api } from '../convex/_generated/api';
-import { WAKE_WORD_SERVER_URL } from '../constants';
+import { WebRTCIntegration } from './WebRTCIntegration';
 
 import './App.css';
-import { useMutation } from 'convex/react';
 
 interface Recording {
 	url: string;
@@ -26,6 +24,43 @@ interface TranscriptionResult {
 	chunkIndex: number;
 }
 
+interface ServerEvent {
+	type: string;
+	data: Record<string, unknown>;
+	timestamp: number;
+	client_id: string;
+}
+
+interface SSEEvent {
+	type: string;
+	data: Record<string, unknown>;
+	timestamp: number;
+	client_id: string;
+}
+
+// Throttle utility function
+const throttle = <T extends unknown[]>(
+	func: (...args: T) => void,
+	delay: number,
+) => {
+	let timeoutId: number | null = null;
+	let lastExecTime = 0;
+	return (...args: T) => {
+		const currentTime = Date.now();
+
+		if (currentTime - lastExecTime > delay) {
+			func(...args);
+			lastExecTime = currentTime;
+		} else {
+			if (timeoutId) clearTimeout(timeoutId);
+			timeoutId = setTimeout(() => {
+				func(...args);
+				lastExecTime = Date.now();
+			}, delay - (currentTime - lastExecTime));
+		}
+	};
+};
+
 function App() {
 	const [recordings, setRecordings] = useState<Recording[]>([]);
 	const [isRecording, setIsRecording] = useState(false);
@@ -44,6 +79,19 @@ function App() {
 	const [chunkCounter, setChunkCounter] = useState(0);
 	const [wakeWordDetected, setWakeWordDetected] = useState(false);
 
+	// Real-time server data from WebRTC
+	const [realTimeAudioLevel, setRealTimeAudioLevel] = useState(0);
+	const [serverWakeWordDetected, setServerWakeWordDetected] = useState(false);
+
+	// SSE connection state
+	const [sseConnected, setSseConnected] = useState(false);
+	const [sseEvents, setSseEvents] = useState<SSEEvent[]>([]);
+	const [lastTimestamp, setLastTimestamp] = useState<string>('');
+	const clientId = useMemo(
+		() => `react-client-${Math.random().toString(36).substr(2, 9)}`,
+		[],
+	);
+
 	const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 	const audioChunksRef = useRef<BlobPart[]>([]);
 	const streamRef = useRef<MediaStream | null>(null);
@@ -51,8 +99,19 @@ function App() {
 	const analyserRef = useRef<AnalyserNode | null>(null);
 	const animationFrameRef = useRef<number | null>(null);
 
+	// Throttled audio level setters to prevent excessive re-renders
+	const throttledSetAudioLevel = useCallback(
+		throttle((level: number) => setAudioLevel(level), 100), // Update only 10 times per second
+		[],
+	);
+
+	const throttledSetRealTimeAudioLevel = useCallback(
+		throttle((level: number) => setRealTimeAudioLevel(level), 200), // Update only 5 times per second
+		[],
+	);
+
 	// Cleanup function
-	const cleanupRecording = () => {
+	const cleanupRecording = useCallback(() => {
 		if (timerRef.current) {
 			clearInterval(timerRef.current);
 			timerRef.current = null;
@@ -71,10 +130,10 @@ function App() {
 		setRecordingTime(0);
 		setAudioLevel(0);
 		setIsPaused(false);
-	};
+	}, []);
 
 	// Audio level monitoring for visual feedback
-	const monitorAudioLevel = () => {
+	const monitorAudioLevel = useCallback(() => {
 		if (!analyserRef.current) return;
 
 		const dataArray = new Uint8Array(analyserRef.current.frequencyBinCount);
@@ -82,12 +141,12 @@ function App() {
 
 		const average =
 			dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
-		setAudioLevel(average);
+		throttledSetAudioLevel(average);
 
 		if (isRecording && !isPaused) {
 			animationFrameRef.current = requestAnimationFrame(monitorAudioLevel);
 		}
-	};
+	}, [isRecording, isPaused, throttledSetAudioLevel]);
 
 	const startRecording = async () => {
 		try {
@@ -149,16 +208,7 @@ function App() {
 
 				setRecordings((prev) => [...prev, newRecording]);
 
-				// Upload to Convex
 				setIsUploading(true);
-				try {
-					await uploadAudioToConvex(audioBlob);
-					console.log('Recording uploaded to Convex successfully');
-				} catch (error) {
-					console.error('Failed to upload to Convex:', error);
-				} finally {
-					setIsUploading(false);
-				}
 
 				cleanupRecording();
 			};
@@ -187,95 +237,53 @@ function App() {
 			);
 		}
 	};
-	const getUploadUrl = useMutation(api.audioMutations.getUploadUrl);
 
-	const uploadAudioToConvex = async (audioBlob: Blob) => {
-		try {
-			// Get upload URL from Convex
-			const uploadUrl = await getUploadUrl();
-
-			// Upload the blob to Convex
-			const response = await fetch(uploadUrl, {
-				method: 'POST',
-				body: audioBlob,
-			});
-
-			if (!response.ok) {
-				throw new Error(`Upload failed: ${response.statusText}`);
-			}
-
-			const result = await response.json();
-			console.log('Upload successful:', result);
-			return result;
-		} catch (error) {
-			console.error('Error uploading audio to Convex:', error);
-			alert(
-				'Failed to upload recording to server. The file was still saved locally.',
-			);
-			throw error;
-		}
-	};
-
-	const uploadChunkForTranscription = async (chunk: AudioChunk) => {
-		try {
-			// Send directly to the wake word detection server
-			const wakeWordEndpoint = `${WAKE_WORD_SERVER_URL}/detect`;
-
+	// WebRTC event handlers - memoized to prevent recreating on every render
+	const handleWakeWordDetected = useCallback(
+		(confidence: number) => {
 			console.log(
-				`🚀 Sending chunk ${chunk.chunkIndex} to wake word server: ${wakeWordEndpoint}`,
+				`🔥 Wake word detected with ${(confidence * 100).toFixed(
+					1,
+				)}% confidence`,
 			);
 
-			const formData = new FormData();
-			formData.append('audio', chunk.blob, `chunk_${chunk.chunkIndex}.webm`);
-
-			const response = await fetch(wakeWordEndpoint, {
-				method: 'POST',
-				body: formData,
-			});
-
-			if (!response.ok) {
-				throw new Error(`Wake word detection failed: ${response.statusText}`);
-			}
-
-			const result = await response.json();
-
-			// Process wake word detection results
-			let displayText = '🔍 Listening...';
-			let wakeWordFound = false;
-
-			if (result.detections && result.detections.length > 0) {
-				const detections = result.detections
-					.map(
-						(detection: { model: string; score: number }) =>
-							`${detection.model} (${(detection.score * 100).toFixed(1)}%)`,
-					)
-					.join(', ');
-				displayText = `🔥 WAKE WORD DETECTED: ${detections}`;
-				wakeWordFound = true;
-			}
-
-			// Add result to state
+			// Add result to transcription results
 			const transcriptionResult: TranscriptionResult = {
-				text: displayText,
-				timestamp: chunk.timestamp,
-				chunkIndex: chunk.chunkIndex,
+				text: `🔥 WAKE WORD DETECTED: Server (${(confidence * 100).toFixed(
+					1,
+				)}%)`,
+				timestamp: Date.now(),
+				chunkIndex: chunkCounter,
 			};
 
 			setTranscriptionResults((prev) => [...prev, transcriptionResult]);
+			setWakeWordDetected(true);
+			setServerWakeWordDetected(true);
 
-			// Update wake word detection state
-			if (wakeWordFound) {
-				setWakeWordDetected(true);
-				// Reset after 5 seconds
-				setTimeout(() => setWakeWordDetected(false), 5000);
-			}
+			// Reset after 5 seconds
+			setTimeout(() => {
+				setWakeWordDetected(false);
+				setServerWakeWordDetected(false);
+			}, 5000);
+		},
+		[chunkCounter],
+	);
 
-			return result;
-		} catch (error) {
-			console.error('Error transcribing audio chunk:', error);
-			throw error;
+	const handleAudioLevel = useCallback(
+		(level: number) => {
+			throttledSetRealTimeAudioLevel(level);
+		},
+		[throttledSetRealTimeAudioLevel],
+	);
+
+	const handleServerEvent = useCallback((event: ServerEvent) => {
+		console.log('📡 Server event received:', event);
+
+		// Update chunk counter for display purposes
+		if (event.type === 'audio_level') {
+			setChunkCounter((prev) => prev + 1);
 		}
-	};
+	}, []);
 
 	const processAudioChunk = async (event: BlobEvent) => {
 		if (event.data.size > 0) {
@@ -302,16 +310,13 @@ function App() {
 			setAudioChunks((prev) => [...prev, chunk]);
 			setChunkCounter((prev) => prev + 1);
 
-			// Upload chunk for wake word detection
-			try {
-				await uploadChunkForTranscription(chunk);
-			} catch (error) {
-				console.error('Failed to process chunk:', error);
-			}
+			// Audio chunks are now handled by WebRTC integration
+			// The WebRTC component will stream audio directly to the server
+			console.log('📡 Audio chunk will be processed by WebRTC integration');
 		}
 	};
 
-	const stopRecording = () => {
+	const stopRecording = useCallback(() => {
 		if (
 			mediaRecorderRef.current &&
 			mediaRecorderRef.current.state !== 'inactive'
@@ -319,9 +324,9 @@ function App() {
 			mediaRecorderRef.current.stop();
 			setIsRecording(false);
 		}
-	};
+	}, []);
 
-	const pauseRecording = () => {
+	const pauseRecording = useCallback(() => {
 		if (
 			mediaRecorderRef.current &&
 			mediaRecorderRef.current.state === 'recording'
@@ -332,9 +337,9 @@ function App() {
 				clearInterval(timerRef.current);
 			}
 		}
-	};
+	}, []);
 
-	const resumeRecording = () => {
+	const resumeRecording = useCallback(() => {
 		if (
 			mediaRecorderRef.current &&
 			mediaRecorderRef.current.state === 'paused'
@@ -348,32 +353,98 @@ function App() {
 			// Resume audio monitoring
 			monitorAudioLevel();
 		}
-	};
+	}, [monitorAudioLevel]);
 
-	const deleteRecording = (index: number) => {
+	const deleteRecording = useCallback((index: number) => {
 		setRecordings((prev) => {
 			const updated = [...prev];
 			URL.revokeObjectURL(updated[index].url); // Clean up memory
 			updated.splice(index, 1);
 			return updated;
 		});
-	};
+	}, []);
 
-	// Format time display
-	const formatTime = (seconds: number) => {
+	// Format time display - memoized to prevent unnecessary recalculations
+	const formatTime = useCallback((seconds: number) => {
 		const mins = Math.floor(seconds / 60);
 		const secs = seconds % 60;
 		return `${mins.toString().padStart(2, '0')}:${secs
 			.toString()
 			.padStart(2, '0')}`;
-	};
+	}, []);
+
+	// Memoized computed values
+	const recentSseEvents = useMemo(
+		() => sseEvents.slice(-5).reverse(),
+		[sseEvents],
+	);
+
+	const recentAudioChunks = useMemo(() => audioChunks.slice(-5), [audioChunks]);
+
+	const audioLevelPercentage = useMemo(
+		() => (audioLevel / 255) * 100,
+		[audioLevel],
+	);
+
+	const serverAudioLevelPercentage = useMemo(
+		() => Math.min((realTimeAudioLevel / 2000) * 100, 100),
+		[realTimeAudioLevel],
+	);
+
+	// Throttled SSE event handler to prevent excessive re-renders
+	const throttledSetSseEvents = useCallback(
+		throttle((newEvent: SSEEvent) => {
+			setSseEvents((prev) => [...prev.slice(-19), newEvent]); // Keep last 20 events
+		}, 50), // Update max 20 times per second
+		[],
+	);
+
+	// SSE connection setup
+	useEffect(() => {
+		const eventSource = new EventSource(
+			`http://localhost:8000/sse/${clientId}`,
+		);
+
+		eventSource.onopen = () => {
+			console.log('📡 SSE connection opened');
+			setSseConnected(true);
+		};
+
+		eventSource.onmessage = (event) => {
+			try {
+				const data = JSON.parse(event.data) as SSEEvent;
+				console.log('📡 SSE event received:', data);
+
+				throttledSetSseEvents(data);
+
+				// Update timestamp for display
+				if (data.type === 'timestamp_test') {
+					const timestampData = data.data as { datetime?: string };
+					if (timestampData.datetime) {
+						setLastTimestamp(timestampData.datetime);
+					}
+				}
+			} catch (error) {
+				console.error('Error parsing SSE data:', error);
+			}
+		};
+
+		eventSource.onerror = (error) => {
+			console.error('📡 SSE error:', error);
+			setSseConnected(false);
+		};
+
+		return () => {
+			eventSource.close();
+		};
+	}, [clientId, throttledSetSseEvents]);
 
 	// Cleanup on component unmount
 	useEffect(() => {
 		return () => {
 			cleanupRecording();
 		};
-	}, []);
+	}, [cleanupRecording]);
 
 	// Cleanup animation frame when not recording
 	useEffect(() => {
@@ -399,6 +470,23 @@ function App() {
 
 			<div className="audio-recorder-section">
 				<h2>Custom Audio Recorder</h2>
+
+				{/* SSE Connection Status */}
+				<div className="sse-status">
+					<h3>📡 Server Events (SSE)</h3>
+					<div className="config-row">
+						<span>Connection: </span>
+						<span className={sseConnected ? 'connected' : 'disconnected'}>
+							{sseConnected ? '✅ Connected' : '❌ Disconnected'}
+						</span>
+						<span style={{ marginLeft: '20px' }}>Client ID: {clientId}</span>
+					</div>
+					{lastTimestamp && (
+						<div className="config-row">
+							<span>🕐 Last Timestamp: {lastTimestamp}</span>
+						</div>
+					)}
+				</div>
 
 				{/* Wake Word Detection Configuration */}
 				<div className="chunk-config">
@@ -502,25 +590,44 @@ function App() {
 							<div className="audio-visualizer">
 								<div
 									className="audio-level-bar"
-									style={{ width: `${(audioLevel / 255) * 100}%` }}
+									style={{ width: `${audioLevelPercentage}%` }}
 								></div>
-							</div>
-						)}
-
-						{isUploading && (
-							<div className="upload-status">
-								<span>📤 Uploading recording to Convex...</span>
 							</div>
 						)}
 					</div>
 				)}
 
+				{/* WebRTC Integration */}
+				<WebRTCIntegration
+					onWakeWordDetected={handleWakeWordDetected}
+					onAudioLevel={handleAudioLevel}
+					onServerEvent={handleServerEvent}
+					isRecording={isRecording}
+					audioStream={streamRef.current}
+				/>
+
 				{/* Wake Word Detection Results */}
 				<div className="transcription-results">
 					<h3>Wake Word Detection</h3>
-					{wakeWordDetected && (
+					{(wakeWordDetected || serverWakeWordDetected) && (
 						<div className="wake-word-alert">🔥 WAKE WORD DETECTED! 🔥</div>
 					)}
+
+					{/* Real-time Audio Level from Server */}
+					{isRecording && (
+						<div className="server-audio-level">
+							<h4>📊 Server Audio Level: {realTimeAudioLevel.toFixed(0)}</h4>
+							<div className="audio-visualizer">
+								<div
+									className="audio-level-bar"
+									style={{
+										width: `${serverAudioLevelPercentage}%`,
+									}}
+								></div>
+							</div>
+						</div>
+					)}
+
 					{transcriptionResults.length > 0 && (
 						<div className="transcription-list">
 							{transcriptionResults.map((result, index) => (
@@ -536,12 +643,59 @@ function App() {
 					)}
 				</div>
 
+				{/* SSE Events Debug Info */}
+				{sseEvents.length > 0 && (
+					<div className="sse-events-info">
+						<h4>📡 Recent SSE Events ({sseEvents.length})</h4>
+						<div className="sse-events-list">
+							{recentSseEvents.map((event, index) => (
+								<div key={index} className="sse-event-item">
+									<span className="event-type">
+										{event.type === 'timestamp_test' && '🕐'}
+										{event.type === 'wake_word_detected' && '🔥'}
+										{event.type === 'agent_start' && '🤖'}
+										{event.type === 'connected' && '✅'}
+										{event.type === 'keepalive' && '💓'}
+										{event.type}
+									</span>
+									<span className="event-time">
+										{new Date(event.timestamp * 1000).toLocaleTimeString()}
+									</span>
+									{event.type === 'timestamp_test' && (
+										<span className="event-data">
+											{(event.data as { datetime?: string }).datetime}
+										</span>
+									)}
+									{event.type === 'wake_word_detected' && (
+										<span className="event-data">
+											Confidence:{' '}
+											{(
+												(event.data as { confidence?: number }).confidence || 0
+											).toFixed(3)}
+										</span>
+									)}
+									{event.type === 'agent_start' && (
+										<span className="event-data">
+											{(event.data as { message?: string }).message}{' '}
+											(Confidence:{' '}
+											{(
+												(event.data as { confidence?: number }).confidence || 0
+											).toFixed(3)}
+											)
+										</span>
+									)}
+								</div>
+							))}
+						</div>
+					</div>
+				)}
+
 				{/* Audio Chunks Debug Info */}
 				{audioChunks.length > 0 && (
 					<div className="chunks-info">
 						<h4>Audio Chunks Processed: {audioChunks.length}</h4>
 						<div className="chunks-list">
-							{audioChunks.slice(-5).map((chunk, index) => (
+							{recentAudioChunks.map((chunk, index) => (
 								<div key={index} className="chunk-item">
 									<span>
 										Chunk {chunk.chunkIndex}:{' '}
