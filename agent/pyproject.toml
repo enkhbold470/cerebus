@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "agent"
 version = "0.1.0"
-description = ""
+description = "Smart Glasses ReAct AI Agent - Navigation and scene understanding system"
 authors = ["knhn1004 <49494541+knhn1004@users.noreply.github.com>"]
 readme = "README.md"
 
@@ -13,6 +13,15 @@ pydantic = "^2.10.6"
 python-dotenv = "^1.0.1"
 google-cloud-aiplatform = {version = "^1.93.0", extras = ["adk", "agent-engines"]}
 
+[tool.poetry.scripts]
+# Agent execution scripts
+agent-web = "scripts:run_web"
+agent-cli = "scripts:run_cli"
+agent-test = "scripts:run_tests"
+
+# Development and debugging scripts
+agent-setup = "scripts:setup_environment"
+agent-debug = "scripts:debug_agent"
 
 [build-system]
 requires = ["poetry-core"]

@@ -15,3 +15,6 @@ __pycache__/
 .claude/
 test_videos/
 debug_audio/
+
+*.pt
+*.jpg
