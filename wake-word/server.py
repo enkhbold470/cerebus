@@ -24,11 +24,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-<<<<<<<< HEAD:wake-word/main_server.py
-from typing import Dict, Optional, List
-========
-from typing import Dict, Optional
->>>>>>>> d920de2 (Refactor agent initialization and enhance wake word server functionality. Updated import structure to directly reference root_agent and added new agent logic for GPS and video processing capabilities. Introduced comprehensive audio feedback mechanisms for navigation assistance.):wake-word/server.py
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -249,13 +245,10 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.sse_connections: Dict[str, asyncio.Queue] = {}
         self.audio_processors: Dict[str, "AudioProcessor"] = {}
-<<<<<<<< HEAD:wake-word/main_server.py
         # GPS and Navigation data storage
         self.navigation_sessions: Dict[str, NavigationData] = {}
         self.location_history: Dict[str, List[LocationData]] = {}
-========
         self.agent_sessions: Dict[str, dict] = {}  # ADK agent sessions
->>>>>>>> d920de2 (Refactor agent initialization and enhance wake word server functionality. Updated import structure to directly reference root_agent and added new agent logic for GPS and video processing capabilities. Introduced comprehensive audio feedback mechanisms for navigation assistance.):wake-word/server.py
 
     async def connect_websocket(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
@@ -1366,7 +1359,6 @@ async def turn_off_light_endpoint():
     return {"message": "Light turned off", "ip": args.light_ip}
 
 
-<<<<<<<< HEAD:wake-word/main_server.py
 # GPS and Navigation Endpoints
 @app.post("/gps/location")
 async def update_location(location_data: dict):
@@ -1694,7 +1686,9 @@ async def get_navigation_sessions():
 
     except Exception as e:
         logger.error(f"Error getting navigation sessions: {e}")
-========
+        return {"status": "error", "message": str(e)}
+
+
 @app.post("/test/audio_response/{client_id}")
 async def test_audio_response(client_id: str, request: Request):
     """Test audio response generation and playback"""
@@ -1757,7 +1751,6 @@ async def test_audio_response(client_id: str, request: Request):
 
     except Exception as e:
         logger.error(f"Error in audio response test: {e}")
->>>>>>>> d920de2 (Refactor agent initialization and enhance wake word server functionality. Updated import structure to directly reference root_agent and added new agent logic for GPS and video processing capabilities. Introduced comprehensive audio feedback mechanisms for navigation assistance.):wake-word/server.py
         return {"status": "error", "message": str(e)}
 
 
