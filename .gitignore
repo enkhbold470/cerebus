@@ -12,6 +12,6 @@ __pycache__/
 .DS_Store
 
 # Claude session data
-.claude/ 
+.claude/
 test_videos/
 debug_audio/
