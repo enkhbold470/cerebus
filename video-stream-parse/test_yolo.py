@@ -114,7 +114,7 @@ def test_yolo_on_videos():
         return False
 
     # Find video files in test_videos directory
-    video_dir = "../test_videos"
+    video_dir = "test_videos"
     if not os.path.exists(video_dir):
         print(f"✗ Test videos directory not found: {video_dir}")
         return False

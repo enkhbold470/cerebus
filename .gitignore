@@ -16,5 +16,33 @@ __pycache__/
 test_videos/
 debug_audio/
 
+# ESP32 and AI generated content
+debug_images/
+agent/debug_images/
+*_detections.txt
+*_detections_*/
+yolo_detections_*/
+stream_captures_*/
+esp32_analysis_*/
+esp32_temp/
+captured_frames_*/
+
+# YOLO models and training data
 *.pt
+*.partial
+yolov*.pt*
+
+# Generated images
 *.jpg
+*.jpeg
+*.png
+
+# Test files and documentation
+agent/test_*.py
+agent/*_UPDATE.md
+agent/*_fix.py
+
+# Audio files
+audio_*/
+*.mp3
+*.wav
