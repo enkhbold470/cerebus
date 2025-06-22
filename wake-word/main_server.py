@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional, List
 
 import numpy as np
 
@@ -99,6 +99,40 @@ class AudioEvent:
     client_id: str
 
 
+@dataclass
+class LocationData:
+    lat: float
+    lng: float
+    accuracy: Optional[float] = None
+    timestamp: float = 0
+    speed: Optional[float] = None
+    heading: Optional[float] = None
+
+
+@dataclass
+class RouteStep:
+    instruction: str
+    distance: str
+    duration: str
+    start_location: LocationData
+    end_location: LocationData
+
+
+@dataclass
+class NavigationData:
+    session_id: str
+    current_location: LocationData
+    destination: Optional[LocationData] = None
+    destination_name: Optional[str] = None
+    route_steps: List[RouteStep] = None
+    current_step: int = 0
+    total_distance: Optional[str] = None
+    total_duration: Optional[str] = None
+    eta: Optional[str] = None
+    travel_mode: str = "WALKING"
+    last_updated: float = 0
+
+
 # Global variables for wake word detection
 owwModel = None
 mic_stream = None
@@ -113,6 +147,9 @@ class ConnectionManager:
         self.active_connections: Dict[str, WebSocket] = {}
         self.sse_connections: Dict[str, asyncio.Queue] = {}
         self.audio_processors: Dict[str, "AudioProcessor"] = {}
+        # GPS and Navigation data storage
+        self.navigation_sessions: Dict[str, NavigationData] = {}
+        self.location_history: Dict[str, List[LocationData]] = {}
 
     async def connect_websocket(self, websocket: WebSocket, client_id: str):
         await websocket.accept()
@@ -737,6 +774,336 @@ async def turn_off_light_endpoint():
     """Turn off the light manually"""
     await asyncio.get_event_loop().run_in_executor(None, turn_off_light, args.light_ip)
     return {"message": "Light turned off", "ip": args.light_ip}
+
+
+# GPS and Navigation Endpoints
+@app.post("/gps/location")
+async def update_location(location_data: dict):
+    """Receive GPS location updates from frontend"""
+    try:
+        session_id = location_data.get("sessionId", "default")
+
+        location = LocationData(
+            lat=location_data["lat"],
+            lng=location_data["lng"],
+            accuracy=location_data.get("accuracy"),
+            timestamp=location_data.get("timestamp", time.time()),
+            speed=location_data.get("speed"),
+            heading=location_data.get("heading"),
+        )
+
+        # Store in location history
+        if session_id not in manager.location_history:
+            manager.location_history[session_id] = []
+
+        manager.location_history[session_id].append(location)
+
+        # Keep only last 100 locations per session
+        if len(manager.location_history[session_id]) > 100:
+            manager.location_history[session_id] = manager.location_history[session_id][
+                -100:
+            ]
+
+        # Update current location in navigation session if exists
+        if session_id in manager.navigation_sessions:
+            manager.navigation_sessions[session_id].current_location = location
+            manager.navigation_sessions[session_id].last_updated = time.time()
+
+        logger.info(
+            f"📍 Location updated for {session_id}: {location.lat:.6f}, {location.lng:.6f}"
+        )
+
+        return {
+            "status": "success",
+            "message": "Location updated",
+            "session_id": session_id,
+            "location": {
+                "lat": location.lat,
+                "lng": location.lng,
+                "accuracy": location.accuracy,
+                "timestamp": location.timestamp,
+            },
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating location: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/navigation/route")
+async def update_navigation_route(route_data: dict):
+    """Receive route/navigation data from frontend"""
+    try:
+        session_id = route_data.get("sessionId", "default")
+
+        # Extract destination
+        destination = None
+        if "destination" in route_data:
+            dest_data = route_data["destination"]
+            destination = LocationData(
+                lat=dest_data["lat"], lng=dest_data["lng"], timestamp=time.time()
+            )
+
+        # Extract current location
+        current_location = None
+        if "origin" in route_data:
+            origin_data = route_data["origin"]
+            current_location = LocationData(
+                lat=origin_data["lat"], lng=origin_data["lng"], timestamp=time.time()
+            )
+
+        # Extract route steps
+        route_steps = []
+        if "detailed_steps" in route_data:
+            for step_data in route_data["detailed_steps"]:
+                step = RouteStep(
+                    instruction=step_data["instruction"],
+                    distance=step_data["distance"],
+                    duration=step_data["duration"],
+                    start_location=LocationData(
+                        lat=step_data["start_location"]["lat"],
+                        lng=step_data["start_location"]["lng"],
+                        timestamp=time.time(),
+                    ),
+                    end_location=LocationData(
+                        lat=step_data["end_location"]["lat"],
+                        lng=step_data["end_location"]["lng"],
+                        timestamp=time.time(),
+                    ),
+                )
+                route_steps.append(step)
+
+        # Create or update navigation session
+        navigation_data = NavigationData(
+            session_id=session_id,
+            current_location=current_location,
+            destination=destination,
+            destination_name=route_data.get("destination_name"),
+            route_steps=route_steps,
+            total_distance=route_data.get("route_summary", {}).get("distance"),
+            total_duration=route_data.get("route_summary", {}).get("duration"),
+            travel_mode=route_data.get("route_summary", {}).get(
+                "travel_mode", "WALKING"
+            ),
+            last_updated=time.time(),
+        )
+
+        manager.navigation_sessions[session_id] = navigation_data
+
+        logger.info(
+            f"🗺️ Navigation route updated for {session_id}: {len(route_steps)} steps to {route_data.get('destination_name', 'unknown destination')}"
+        )
+
+        return {
+            "status": "success",
+            "message": "Navigation route updated",
+            "session_id": session_id,
+            "steps_count": len(route_steps),
+            "destination": route_data.get("destination_name"),
+            "total_distance": navigation_data.total_distance,
+            "total_duration": navigation_data.total_duration,
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating navigation route: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/navigation/current")
+async def get_current_navigation(session_id: str = "default"):
+    """Get current navigation data for agent consumption"""
+    try:
+        if session_id not in manager.navigation_sessions:
+            return {
+                "status": "error",
+                "message": f"No navigation session found for {session_id}",
+                "has_navigation": False,
+            }
+
+        nav_data = manager.navigation_sessions[session_id]
+
+        # Get current step instruction
+        current_instruction = None
+        next_instruction = None
+        remaining_steps = 0
+
+        if nav_data.route_steps and nav_data.current_step < len(nav_data.route_steps):
+            current_instruction = nav_data.route_steps[
+                nav_data.current_step
+            ].instruction
+            remaining_steps = len(nav_data.route_steps) - nav_data.current_step
+
+            if nav_data.current_step + 1 < len(nav_data.route_steps):
+                next_instruction = nav_data.route_steps[
+                    nav_data.current_step + 1
+                ].instruction
+
+        # Calculate time since last update
+        time_since_update = time.time() - nav_data.last_updated
+
+        result = {
+            "status": "success",
+            "has_navigation": True,
+            "session_id": session_id,
+            "current_location": (
+                {
+                    "lat": nav_data.current_location.lat,
+                    "lng": nav_data.current_location.lng,
+                    "accuracy": nav_data.current_location.accuracy,
+                    "timestamp": nav_data.current_location.timestamp,
+                }
+                if nav_data.current_location
+                else None
+            ),
+            "destination": (
+                {
+                    "lat": nav_data.destination.lat,
+                    "lng": nav_data.destination.lng,
+                    "name": nav_data.destination_name,
+                }
+                if nav_data.destination
+                else None
+            ),
+            "navigation_status": {
+                "current_step": nav_data.current_step,
+                "total_steps": len(nav_data.route_steps) if nav_data.route_steps else 0,
+                "remaining_steps": remaining_steps,
+                "current_instruction": current_instruction,
+                "next_instruction": next_instruction,
+                "total_distance": nav_data.total_distance,
+                "total_duration": nav_data.total_duration,
+                "travel_mode": nav_data.travel_mode,
+                "last_updated": nav_data.last_updated,
+                "time_since_update_seconds": time_since_update,
+            },
+        }
+
+        logger.info(
+            f"🧭 Navigation data requested for {session_id} - {remaining_steps} steps remaining"
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error getting current navigation: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/navigation/next_step")
+async def get_next_navigation_step(session_id: str = "default"):
+    """Get next navigation step for agent guidance"""
+    try:
+        if session_id not in manager.navigation_sessions:
+            return {
+                "status": "error",
+                "message": f"No navigation session found for {session_id}",
+                "has_step": False,
+            }
+
+        nav_data = manager.navigation_sessions[session_id]
+
+        if not nav_data.route_steps or nav_data.current_step >= len(
+            nav_data.route_steps
+        ):
+            return {
+                "status": "success",
+                "message": "Navigation complete - no more steps",
+                "has_step": False,
+                "navigation_complete": True,
+            }
+
+        current_step = nav_data.route_steps[nav_data.current_step]
+
+        # Advance to next step
+        nav_data.current_step += 1
+        nav_data.last_updated = time.time()
+
+        return {
+            "status": "success",
+            "has_step": True,
+            "step_number": nav_data.current_step,
+            "total_steps": len(nav_data.route_steps),
+            "instruction": current_step.instruction,
+            "distance": current_step.distance,
+            "duration": current_step.duration,
+            "start_location": {
+                "lat": current_step.start_location.lat,
+                "lng": current_step.start_location.lng,
+            },
+            "end_location": {
+                "lat": current_step.end_location.lat,
+                "lng": current_step.end_location.lng,
+            },
+            "remaining_steps": len(nav_data.route_steps) - nav_data.current_step,
+            "navigation_complete": nav_data.current_step >= len(nav_data.route_steps),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting next navigation step: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/gps/location/{session_id}")
+async def get_current_location(session_id: str):
+    """Get current location for a session"""
+    try:
+        if (
+            session_id in manager.location_history
+            and manager.location_history[session_id]
+        ):
+            latest_location = manager.location_history[session_id][-1]
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "location": {
+                    "lat": latest_location.lat,
+                    "lng": latest_location.lng,
+                    "accuracy": latest_location.accuracy,
+                    "timestamp": latest_location.timestamp,
+                    "speed": latest_location.speed,
+                    "heading": latest_location.heading,
+                },
+                "age_seconds": time.time() - latest_location.timestamp,
+            }
+        else:
+            return {
+                "status": "error",
+                "message": f"No location data found for session {session_id}",
+                "has_location": False,
+            }
+
+    except Exception as e:
+        logger.error(f"Error getting current location: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/navigation/sessions")
+async def get_navigation_sessions():
+    """Get all active navigation sessions"""
+    try:
+        sessions = []
+        for session_id, nav_data in manager.navigation_sessions.items():
+            session_info = {
+                "session_id": session_id,
+                "destination_name": nav_data.destination_name,
+                "current_step": nav_data.current_step,
+                "total_steps": len(nav_data.route_steps) if nav_data.route_steps else 0,
+                "last_updated": nav_data.last_updated,
+                "time_since_update": time.time() - nav_data.last_updated,
+                "travel_mode": nav_data.travel_mode,
+                "has_current_location": nav_data.current_location is not None,
+            }
+            sessions.append(session_info)
+
+        return {
+            "status": "success",
+            "active_sessions": len(sessions),
+            "sessions": sessions,
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting navigation sessions: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 @app.get("/sse/{client_id}")
