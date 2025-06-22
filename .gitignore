@@ -1,8 +1,18 @@
+# Environment variables
 .env
-frames/
-.vscode/
-ai_frames/
-*.jpg
+
+# Node.js
+/server/node_modules
+npm-debug.log
+
+# Python
+__pycache__/
+
+# macOS
+.DS_Store
+
+# Claude session data
+.claude/ 
 
 # YOLO model files
 *.pt
@@ -12,16 +22,3 @@ ai_frames/
 
 # Stream capture directories
 stream_captures_*/
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.egg-info/
-
-# macOS
-.DS_Store
-
-test_videos/
