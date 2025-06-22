@@ -1,0 +1,15 @@
+# Environment variables
+.env
+
+# Node.js
+node_modules/
+npm-debug.log
+
+# Python
+__pycache__/
+
+# macOS
+.DS_Store
+
+# Claude session data
+.claude/ 
