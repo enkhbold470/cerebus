@@ -1,0 +1,29 @@
+# Simple Navigation System Requirements
+# Core dependencies for object detection and navigation
+
+# Image processing
+Pillow
+
+# YOLO object detection
+ultralytics
+
+# HTTP requests for API testing
+requests
+
+# Additional dependencies that ultralytics might need
+torch
+torchvision
+opencv-python
+
+# Optional: for better performance
+numpy
+
+# Note: The following are built-in Python modules and don't need installation:
+# - json
+# - math  
+# - time
+# - base64
+# - http.server
+# - urllib.parse
+# - tempfile
+# - os 
