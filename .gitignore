@@ -13,12 +13,5 @@ __pycache__/
 
 # Claude session data
 .claude/ 
-
-# YOLO model files
-*.pt
-
-# YOLO detection logs
-*_detections.txt
-
-# Stream capture directories
-stream_captures_*/
+test_videos/
+debug_audio/
