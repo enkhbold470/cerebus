@@ -417,6 +417,23 @@ function App() {
 
 				throttledSetSseEvents(data);
 
+				// Handle specific event types
+				if (data.type === 'wake_word_detected') {
+					const confidence = data.data.confidence as number;
+					handleWakeWordDetected(confidence);
+				} else if (data.type === 'audio_level') {
+					const level = data.data.level as number;
+					handleAudioLevel(level);
+				}
+
+				// Handle server events
+				handleServerEvent({
+					type: data.type,
+					data: data.data,
+					timestamp: data.timestamp,
+					client_id: data.client_id,
+				});
+
 				// Update timestamp for display
 				if (data.type === 'timestamp_test') {
 					const timestampData = data.data as { datetime?: string };
@@ -599,9 +616,6 @@ function App() {
 
 				{/* WebRTC Integration */}
 				<WebRTCIntegration
-					onWakeWordDetected={handleWakeWordDetected}
-					onAudioLevel={handleAudioLevel}
-					onServerEvent={handleServerEvent}
 					isRecording={isRecording}
 					audioStream={streamRef.current}
 				/>
