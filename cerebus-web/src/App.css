@@ -579,6 +579,13 @@
 	/* Prevent layout shifts from frequent updates */
 	min-height: 120px;
 	contain: layout style;
+	color: #495057; /* Ensure dark text on light background */
+}
+
+.sse-events-info h4 {
+	color: #495057 !important; /* Force dark color for heading */
+	margin-top: 0;
+	margin-bottom: 12px;
 }
 
 .sse-events-list {
@@ -601,21 +608,22 @@
 	font-size: 0.9em;
 	/* Prevent layout shifts */
 	flex-shrink: 0;
+	color: #495057; /* Ensure dark text */
 }
 
 .sse-event-item .event-type {
 	min-width: 140px;
 	font-weight: bold;
-	color: #495057;
+	color: #495057 !important; /* Force dark color */
 }
 
 .sse-event-item .event-time {
 	min-width: 80px;
-	color: #6c757d;
+	color: #6c757d !important; /* Force dark gray color */
 	font-size: 0.85em;
 }
 
 .sse-event-item .event-data {
-	color: #007bff;
+	color: #007bff !important; /* Force blue color */
 	flex: 1;
 }
