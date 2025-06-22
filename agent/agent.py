@@ -1039,13 +1039,13 @@ def start_complete_navigation_system(
 # Create the master agent
 blind_navigation_agent = Agent(
     name="blind_navigation_master",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description=(
         "Master navigation system for blind users with GPS tracking, video obstacle detection, "
         "voice commands, and comprehensive audio feedback."
     ),
     instruction=(
-        "You are a comprehensive navigation assistant for blind users. You coordinate GPS tracking, "
+        "You are a comprehensive navigation assistant for visually impaired users called Cerebus. You coordinate GPS tracking, "
         "real-time navigation updates, video-based obstacle detection with dodging instructions, "
         "voice command processing, and multi-priority audio feedback. Your primary goal is to "
         "provide safe, reliable navigation with clear audio instructions and immediate hazard alerts."
@@ -1074,3 +1074,6 @@ blind_navigation_agent = Agent(
         start_complete_navigation_system,
     ],
 )
+
+# ADK requires this to be named 'root_agent'
+root_agent = blind_navigation_agent

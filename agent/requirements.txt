@@ -1,0 +1,3 @@
+google-adk
+SpeechRecognition
+google-cloud-texttospeech
