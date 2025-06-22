@@ -230,7 +230,7 @@ from ultralytics import YOLO
 from simple_navigation import SimpleNavigation
 
 # Load YOLO model
-model = YOLO("yolov8n.pt")
+model = YOLO("yolo11n.pt")
 nav = SimpleNavigation()
 
 # Process image
