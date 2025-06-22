@@ -14,6 +14,7 @@
 
 import argparse
 import asyncio
+import io
 import json
 import logging
 import queue
@@ -21,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import wave
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +32,7 @@ import numpy as np
 
 # Imports
 import pyaudio
+import requests
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -100,6 +103,48 @@ parser.add_argument(
 )
 
 args = parser.parse_args()
+
+# Groq API configuration
+GROQ_API_KEY = "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"
+GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+
+
+def transcribe_audio_groq(audio_data: bytes) -> str:
+    """Transcribe audio using Groq API"""
+    try:
+        # Create WAV file in memory
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)  # Mono
+            wav_file.setsampwidth(2)  # 16-bit
+            wav_file.setframerate(16000)  # 16kHz
+            wav_file.writeframes(audio_data)
+
+        wav_buffer.seek(0)
+
+        # Prepare the request
+        files = {"file": ("audio.wav", wav_buffer.getvalue(), "audio/wav")}
+
+        data = {"model": "whisper-large-v3", "response_format": "text"}
+
+        headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
+
+        # Make the request
+        response = requests.post(
+            GROQ_API_URL, files=files, data=data, headers=headers, timeout=30
+        )
+
+        if response.status_code == 200:
+            transcription = response.text.strip()
+            return transcription
+        else:
+            logger.error(f"Groq API error: {response.status_code} - {response.text}")
+            return ""
+
+    except Exception as e:
+        logger.error(f"Error transcribing audio with Groq: {e}")
+        return ""
+
 
 from contextlib import asynccontextmanager
 
@@ -732,6 +777,10 @@ class AudioProcessor:
         self.audio_level = 0.0
         self.loop = None  # Store reference to the main event loop
         self.chunks_received = 0  # Track number of audio chunks received
+        self.capture_for_transcription = False
+        self.transcription_audio_chunks = []
+        self.transcription_start_time = 0
+        self.transcription_duration = 3.0  # 5 seconds
 
     def start(self):
         self.is_running = True
@@ -813,6 +862,44 @@ class AudioProcessor:
                 audio_array = np.frombuffer(audio_data, dtype=np.int16)
                 if len(audio_array) > 0:
                     self.audio_level = float(np.abs(audio_array).mean())
+
+            # Capture audio for transcription if flag is set
+            if self.capture_for_transcription:
+                self.transcription_audio_chunks.append(audio_data)
+                current_time = time.time()
+
+                # Check if we've captured enough audio (5 seconds)
+                if (
+                    current_time - self.transcription_start_time
+                    >= self.transcription_duration
+                ):
+                    self.capture_for_transcription = False
+                    combined_audio = b"".join(self.transcription_audio_chunks)
+                    logger.info(
+                        f"📼 {self.client_id}: Captured {len(combined_audio)} bytes for transcription"
+                    )
+
+                    # Transcribe in a separate thread
+                    def transcribe_and_log():
+                        transcription = transcribe_audio_groq(combined_audio)
+                        if transcription:
+                            print(f"\n{'='*60}")
+                            print(
+                                f"🗣️  TRANSCRIPTION ({self.client_id}): {transcription}"
+                            )
+                            print(f"{'='*60}\n")
+                        else:
+                            print(
+                                f"\n❌ No transcription received from {self.client_id}\n"
+                            )
+
+                    # Run transcription in background thread
+                    import threading
+
+                    threading.Thread(target=transcribe_and_log, daemon=True).start()
+
+                    # Clear transcription data
+                    self.transcription_audio_chunks = []
 
             # Log processing details every 100 chunks
             if self.chunks_received % 100 == 0:
@@ -957,13 +1044,19 @@ class AudioProcessor:
             return 0.0
 
     async def _handle_wake_word_detection(self):
-        """Handle wake word detection with light control"""
+        """Handle wake word detection with light control and transcription"""
         logger.info("🔥 WAKE WORD DETECTED! Triggering light...")
 
         # Trigger light immediately
         await asyncio.get_event_loop().run_in_executor(
             None, trigger_light, args.light_ip
         )
+
+        # Capture 5 seconds of audio for transcription from client stream
+        logger.info("🎙️ Capturing client audio for transcription...")
+        self.capture_for_transcription = True
+        self.transcription_audio_chunks = []
+        self.transcription_start_time = time.time()
 
         # Schedule light off after timeout
         async def delayed_light_off():
@@ -1060,6 +1153,45 @@ class WakeWordProcessor:
 
                         # Trigger light control
                         trigger_light(args.light_ip)
+
+                        # Capture 5 seconds of audio for transcription
+                        logger.info("🎙️ Capturing audio for transcription...")
+                        audio_chunks = []
+                        capture_duration = 5.0  # seconds
+                        chunks_to_capture = int(
+                            capture_duration * self.RATE / self.CHUNK
+                        )
+
+                        for _ in range(chunks_to_capture):
+                            try:
+                                chunk_data = mic_stream.read(
+                                    self.CHUNK, exception_on_overflow=False
+                                )
+                                audio_chunks.append(chunk_data)
+                            except Exception as e:
+                                logger.error(f"Error capturing audio chunk: {e}")
+                                break
+
+                        # Combine all audio chunks
+                        if audio_chunks:
+                            combined_audio = b"".join(audio_chunks)
+                            logger.info(
+                                f"📼 Captured {len(combined_audio)} bytes of audio"
+                            )
+
+                            # Transcribe with Groq in a separate thread to avoid blocking
+                            def transcribe_and_log():
+                                transcription = transcribe_audio_groq(combined_audio)
+                                if transcription:
+                                    print(f"\n{'='*60}")
+                                    print(f"🗣️  TRANSCRIPTION: {transcription}")
+                                    print(f"{'='*60}\n")
+                                else:
+                                    print(f"\n❌ No transcription received\n")
+
+                            threading.Thread(
+                                target=transcribe_and_log, daemon=True
+                            ).start()
 
                         # Broadcast wake word event to all connected clients
                         wake_word_event = AudioEvent(
