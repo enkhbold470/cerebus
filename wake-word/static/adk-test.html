@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cerebus ADK Agent Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background-color: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        }
+
+        #messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 20px;
+            background-color: #fafafa;
+            border-radius: 4px;
+        }
+
+        .message {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-radius: 4px;
+        }
+
+        .user-message {
+            background-color: #e3f2fd;
+            text-align: right;
+        }
+
+        .agent-message {
+            background-color: #f1f8e9;
+        }
+
+        .system-message {
+            background-color: #fff3e0;
+            font-style: italic;
+        }
+
+        .wake-word-alert {
+            background-color: #ffcdd2;
+            color: #c62828;
+            font-weight: bold;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.7;
+            }
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 16px;
+        }
+
+        button {
+            background-color: #2196f3;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            font-size: 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+
+        button:hover {
+            background-color: #1976d2;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        .status {
+            margin-bottom: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            background-color: #e8f5e8;
+            border-left: 4px solid #4caf50;
+        }
+
+        .connection-status {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .connected {
+            background-color: #4caf50;
+            color: white;
+        }
+
+        .disconnected {
+            background-color: #f44336;
+            color: white;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🤖 Cerebus ADK Agent Test</h1>
+
+        <div class="status">
+            <div>
+                <strong>Connection Status:</strong>
+                <span id="connectionStatus" class="connection-status disconnected">Disconnected</span>
+            </div>
+            <div>
+                <strong>Client ID:</strong> <span id="clientId">-</span>
+            </div>
+            <div>
+                <strong>ADK Agent Available:</strong> <span id="agentStatus">Unknown</span>
+            </div>
+        </div>
+
+        <div id="messages"></div>
+
+        <form id="messageForm">
+            <div class="form-group">
+                <label for="messageInput">Message to Agent:</label>
+                <input type="text" id="messageInput" placeholder="Type your message here..." disabled>
+            </div>
+            <button type="submit" id="sendButton" disabled>Send Message</button>
+            <button type="button" id="testWakeWord" disabled>Test Wake Word</button>
+            <button type="button" id="clearMessages">Clear Messages</button>
+        </form>
+    </div>
+
+    <script>
+        // Generate random client ID
+        const clientId = `test-client-${Math.random().toString(36).substr(2, 9)}`;
+        document.getElementById('clientId').textContent = clientId;
+
+        // Connection variables
+        let eventSource = null;
+        let isConnected = false;
+
+        // URLs
+        const sseUrl = `http://localhost:8000/sse/${clientId}`;
+        const sendUrl = `http://localhost:8000/send/${clientId}`;
+
+        // DOM elements
+        const messagesDiv = document.getElementById('messages');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const testWakeWordButton = document.getElementById('testWakeWord');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const agentStatus = document.getElementById('agentStatus');
+
+        // Connect to SSE
+        function connectSSE() {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource(sseUrl);
+
+            eventSource.onopen = function () {
+                console.log('SSE connection opened');
+                isConnected = true;
+                updateConnectionStatus();
+                enableControls();
+            };
+
+            eventSource.onmessage = function (event) {
+                const data = JSON.parse(event.data);
+                console.log('SSE event received:', data);
+                handleServerEvent(data);
+            };
+
+            eventSource.onerror = function (event) {
+                console.error('SSE connection error:', event);
+                isConnected = false;
+                updateConnectionStatus();
+                disableControls();
+
+                // Reconnect after 5 seconds
+                setTimeout(() => {
+                    console.log('Attempting to reconnect...');
+                    connectSSE();
+                }, 5000);
+            };
+        }
+
+        // Handle server events
+        function handleServerEvent(data) {
+            switch (data.type) {
+                case 'connected':
+                    addMessage('system', `Connected to server. Agent available: ${data.data.agent_available}`);
+                    agentStatus.textContent = data.data.agent_available ? 'Available' : 'Not Available';
+                    break;
+
+                case 'wake_word_detected':
+                    addMessage('wake-word', `🔥 WAKE WORD DETECTED! Confidence: ${(data.data.confidence * 100).toFixed(1)}%`);
+                    break;
+
+                case 'agent_start':
+                    addMessage('system', `🤖 ${data.data.message}`);
+                    break;
+
+                case 'agent_response':
+                    if (data.data.turn_complete) {
+                        console.log('Agent turn completed');
+                    } else {
+                        addMessage('agent', data.data.message);
+                    }
+                    break;
+
+                case 'audio_level':
+                    // Optionally display audio level
+                    break;
+
+                case 'keepalive':
+                    console.log('Keepalive received');
+                    break;
+
+                default:
+                    addMessage('system', `${data.type}: ${JSON.stringify(data.data)}`);
+            }
+        }
+
+        // Add message to display
+        function addMessage(type, content) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+
+            const timestamp = new Date().toLocaleTimeString();
+            messageDiv.innerHTML = `<strong>[${timestamp}]</strong> ${content}`;
+
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        // Send message to agent
+        async function sendMessage(messageData) {
+            try {
+                const response = await fetch(sendUrl, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(messageData)
+                });
+
+                const result = await response.json();
+                console.log('Message sent, response:', result);
+
+                if (!response.ok) {
+                    addMessage('system', `Error sending message: ${result.message || 'Unknown error'}`);
+                }
+            } catch (error) {
+                console.error('Error sending message:', error);
+                addMessage('system', `Network error: ${error.message}`);
+            }
+        }
+
+        // Update connection status display
+        function updateConnectionStatus() {
+            connectionStatus.textContent = isConnected ? 'Connected' : 'Disconnected';
+            connectionStatus.className = `connection-status ${isConnected ? 'connected' : 'disconnected'}`;
+        }
+
+        // Enable/disable controls
+        function enableControls() {
+            messageInput.disabled = false;
+            sendButton.disabled = false;
+            testWakeWordButton.disabled = false;
+        }
+
+        function disableControls() {
+            messageInput.disabled = true;
+            sendButton.disabled = true;
+            testWakeWordButton.disabled = true;
+        }
+
+        // Event listeners
+        document.getElementById('messageForm').addEventListener('submit', function (e) {
+            e.preventDefault();
+
+            const message = messageInput.value.trim();
+            if (!message) return;
+
+            addMessage('user', message);
+
+            sendMessage({
+                mime_type: 'text/plain',
+                data: message
+            });
+
+            messageInput.value = '';
+        });
+
+        testWakeWordButton.addEventListener('click', function () {
+            addMessage('system', 'Testing wake word detection...');
+
+            sendMessage({
+                mime_type: 'wake_word_detected',
+                data: {
+                    detected: true,
+                    confidence: 0.95,
+                    timestamp: Date.now() / 1000
+                }
+            });
+        });
+
+        document.getElementById('clearMessages').addEventListener('click', function () {
+            messagesDiv.innerHTML = '';
+        });
+
+        // Initialize connection
+        console.log('Connecting to SSE endpoint:', sseUrl);
+        connectSSE();
+    </script>
+</body>
+
+</html>
