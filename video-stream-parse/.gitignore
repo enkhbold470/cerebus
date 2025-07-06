@@ -1,0 +1,6 @@
+stream_captures_*/
+
+*.jpg
+
+*_detections.txt
+*.pt

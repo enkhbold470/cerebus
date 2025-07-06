@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cerebus Audio Test Interface</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .test-section {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background: #f9f9f9;
+        }
+
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            margin: 5px;
+            font-size: 14px;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 5px;
+            background: #e8f4f8;
+            border-left: 4px solid #17a2b8;
+        }
+
+        .error {
+            background: #f8d7da;
+            border-left: 4px solid #dc3545;
+            color: #721c24;
+        }
+
+        .success {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            color: #155724;
+        }
+
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 3px;
+            padding: 10px;
+            margin: 10px 0;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            margin: 5px 0;
+        }
+
+        #audioVisualization {
+            width: 100%;
+            height: 100px;
+            background: #f0f0f0;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🤖 Cerebus Audio Test Interface</h1>
+
+        <div class="test-section">
+            <h3>🔊 Audio Response Test</h3>
+            <p>Test the Google Cloud TTS audio generation and playback:</p>
+            <input type="text" id="testText" placeholder="Enter text to speak..."
+                value="Hello from Cerebus! This is a test of Google Cloud Text-to-Speech.">
+            <button onclick="testAudioResponse()">Test Audio Response</button>
+            <div id="audioStatus" class="status" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>🎤 Wake Word Test</h3>
+            <p>Simulate wake word detection:</p>
+            <button onclick="testWakeWord()">Trigger Wake Word</button>
+            <div id="wakeWordStatus" class="status" style="display: none;"></div>
+        </div>
+
+        <div class="test-section">
+            <h3>📡 Connection Status</h3>
+            <p>Server connection: <span id="connectionStatus">Disconnected</span></p>
+            <button onclick="connectToServer()">Connect to Server</button>
+            <button onclick="disconnectFromServer()">Disconnect</button>
+        </div>
+
+        <div class="test-section">
+            <h3>📝 Event Log</h3>
+            <button onclick="clearLog()">Clear Log</button>
+            <div id="eventLog" class="log"></div>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let eventSource = null;
+        let clientId = 'test_client_' + Math.random().toString(36).substr(2, 9);
+        let isConnected = false;
+
+        // Audio context for playback
+        let audioContext = null;
+
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logElement = document.getElementById('eventLog');
+            const logEntry = document.createElement('div');
+            logEntry.innerHTML = `<span style="color: #666;">[${timestamp}]</span> ${message}`;
+
+            if (type === 'error') {
+                logEntry.style.color = 'red';
+            } else if (type === 'success') {
+                logEntry.style.color = 'green';
+            }
+
+            logElement.appendChild(logEntry);
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('eventLog').innerHTML = '';
+        }
+
+        function updateConnectionStatus(status) {
+            const statusElement = document.getElementById('connectionStatus');
+            statusElement.textContent = status;
+            statusElement.style.color = isConnected ? 'green' : 'red';
+        }
+
+        async function initAudioContext() {
+            if (!audioContext) {
+                try {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    log('Audio context initialized');
+                } catch (error) {
+                    log('Error initializing audio context: ' + error.message, 'error');
+                }
+            }
+        }
+
+        async function playAudio(base64Data) {
+            try {
+                await initAudioContext();
+
+                // Decode base64 to binary
+                const binaryString = atob(base64Data);
+                const arrayBuffer = new ArrayBuffer(binaryString.length);
+                const uint8Array = new Uint8Array(arrayBuffer);
+
+                for (let i = 0; i < binaryString.length; i++) {
+                    uint8Array[i] = binaryString.charCodeAt(i);
+                }
+
+                // Decode audio
+                const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+                // Create source and play
+                const source = audioContext.createBufferSource();
+                source.buffer = audioBuffer;
+                source.connect(audioContext.destination);
+                source.start();
+
+                log('🎵 Audio played successfully!', 'success');
+
+            } catch (error) {
+                log('Error playing audio: ' + error.message, 'error');
+                console.error('Audio playback error:', error);
+            }
+        }
+
+        function connectToServer() {
+            if (isConnected) {
+                log('Already connected to server');
+                return;
+            }
+
+            log('Connecting to server...');
+            eventSource = new EventSource(`/sse/${clientId}?is_audio=true`);
+
+            eventSource.onopen = function (event) {
+                isConnected = true;
+                updateConnectionStatus('Connected');
+                log('✅ Connected to server', 'success');
+            };
+
+            eventSource.onmessage = function (event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    handleServerEvent(data);
+                } catch (error) {
+                    log('Error parsing server message: ' + error.message, 'error');
+                }
+            };
+
+            eventSource.onerror = function (event) {
+                isConnected = false;
+                updateConnectionStatus('Error');
+                log('❌ Server connection error', 'error');
+            };
+        }
+
+        function disconnectFromServer() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                isConnected = false;
+                updateConnectionStatus('Disconnected');
+                log('Disconnected from server');
+            }
+        }
+
+        function handleServerEvent(data) {
+            log(`📡 Server event: ${data.type}`);
+
+            switch (data.type) {
+                case 'connected':
+                    log('Server confirmed connection', 'success');
+                    break;
+
+                case 'agent_response':
+                    if (data.data.mime_type === 'audio/pcm') {
+                        log('🎵 Received audio response');
+                        playAudio(data.data.data);
+                    } else if (data.data.mime_type === 'text/plain') {
+                        log(`💬 Agent text: "${data.data.message}"`, 'success');
+                    }
+                    break;
+
+                case 'wake_word_detected':
+                    log('🔥 Wake word detected!', 'success');
+                    showStatus('wakeWordStatus', 'Wake word detected! Agent is listening...', 'success');
+                    break;
+
+                case 'agent_start':
+                    log('🤖 Agent started', 'success');
+                    break;
+
+                case 'keepalive':
+                    // Don't log keepalives to avoid spam
+                    break;
+
+                default:
+                    log(`Unknown event type: ${data.type}`);
+            }
+        }
+
+        function showStatus(elementId, message, type = 'info') {
+            const statusElement = document.getElementById(elementId);
+            statusElement.textContent = message;
+            statusElement.className = 'status ' + type;
+            statusElement.style.display = 'block';
+
+            // Hide after 3 seconds
+            setTimeout(() => {
+                statusElement.style.display = 'none';
+            }, 3000);
+        }
+
+        async function testAudioResponse() {
+            if (!isConnected) {
+                showStatus('audioStatus', 'Please connect to server first', 'error');
+                return;
+            }
+
+            const text = document.getElementById('testText').value;
+            if (!text.trim()) {
+                showStatus('audioStatus', 'Please enter some text', 'error');
+                return;
+            }
+
+            try {
+                showStatus('audioStatus', 'Generating audio response...', 'info');
+                log(`🔊 Testing audio response: "${text}"`);
+
+                const response = await fetch(`/test/audio_response/${clientId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        text: text
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    showStatus('audioStatus', 'Audio response sent! Check the event log.', 'success');
+                    log('✅ Audio response request successful', 'success');
+                } else {
+                    showStatus('audioStatus', 'Failed to generate audio response', 'error');
+                    log('❌ Audio response failed: ' + result.message, 'error');
+                }
+
+            } catch (error) {
+                showStatus('audioStatus', 'Error: ' + error.message, 'error');
+                log('❌ Audio test error: ' + error.message, 'error');
+            }
+        }
+
+        async function testWakeWord() {
+            if (!isConnected) {
+                showStatus('wakeWordStatus', 'Please connect to server first', 'error');
+                return;
+            }
+
+            try {
+                showStatus('wakeWordStatus', 'Triggering wake word...', 'info');
+                log('🔥 Triggering wake word test');
+
+                const response = await fetch(`/send/${clientId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        mime_type: 'wake_word_detected',
+                        data: {
+                            detected: true,
+                            confidence: 0.95,
+                            timestamp: Date.now() / 1000,
+                            source: 'manual_test'
+                        }
+                    })
+                });
+
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    showStatus('wakeWordStatus', 'Wake word triggered!', 'success');
+                    log('✅ Wake word test successful', 'success');
+                } else {
+                    showStatus('wakeWordStatus', 'Failed to trigger wake word', 'error');
+                    log('❌ Wake word test failed', 'error');
+                }
+
+            } catch (error) {
+                showStatus('wakeWordStatus', 'Error: ' + error.message, 'error');
+                log('❌ Wake word test error: ' + error.message, 'error');
+            }
+        }
+
+        // Auto-connect on page load
+        window.addEventListener('load', function () {
+            log('🚀 Cerebus Audio Test Interface loaded');
+            log(`Client ID: ${clientId}`);
+
+            // Auto-connect to server
+            setTimeout(connectToServer, 500);
+        });
+
+        // Handle page unload
+        window.addEventListener('beforeunload', function () {
+            disconnectFromServer();
+        });
+    </script>
+</body>
+
+</html>
